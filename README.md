@@ -23,3 +23,11 @@ Private repo. Refresh with `python -I sync_from_hub.py` (read-only GETs against 
 
 - `importUrl` values inside some files point at older/incorrect repo locations; code is kept exactly as the hub has it.
 - No third-party code is included, so there are no upstream attributions. No license (private repo).
+
+## Linked to epaper-dashboard
+
+**Frame Bridge** and **Frame Notifier** are also shipped by
+[epaper-dashboard](https://github.com/FrankTank34567/epaper-dashboard) (`hubitat/FrameBridge.groovy`,
+`hubitat/FrameNotifierDriver.groovy`), which serves them from its setup page and tests against them.
+The two copies must stay identical. After changing either one, update the other and run
+`python -I check_epaper_drift.py` (exits 1 on drift).
