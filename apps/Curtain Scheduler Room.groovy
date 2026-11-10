@@ -430,6 +430,11 @@ def roomPage() {
 // Human-readable summary shown at the top of the room page.
 private String statusText() {
     if (!settings.curtains) { return "Pick your curtains below to get started." }
+    if ((settings.openMode in ["time", "laterSunTime"] && !settings.openTime) ||
+        (settings.closeMode in ["time", "earlierSunTime"] && !settings.closeTime)) {
+        // The mode is saved (submitOnChange) before its time is entered; timeToday(null) would throw.
+        return "Enter the open and close times below to finish setting up this room."
+    }
     List lines = []
     lines << "Opens ${fmt(computeOpenTime())}, closes ${fmt(computeCloseTime())}."
     lines << (inOpenWindow() ? "Right now this room is inside its open window."

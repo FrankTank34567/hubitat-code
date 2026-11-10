@@ -1009,7 +1009,9 @@ def scheduledCheck() {
     state.lastResult = bad("Internet unreachable")
     logWarn "Internet unreachable"
 
-    if (state.machine == ST_NORMAL) {
+    // ST_FAILED re-arms once a restart has aged out of the 24-hour budget window.
+    if (state.machine == ST_NORMAL ||
+        (state.machine == ST_FAILED && countRecentCycles() < safeInt(maxPerDay, DEFAULT_MAX_PER_DAY))) {
         setMachine(ST_SUSPECT)
         Integer delay = safeInt(confirmSecs, DEFAULT_CONFIRM_SECS)
         logInfo "Confirming the problem in ${delay}s before acting"
@@ -1066,6 +1068,14 @@ def confirmCheck() {
 private void startCycle(boolean manual) {
     if (!modemPlug) {
         logError "No modem plug configured; cannot restart"
+        return
+    }
+
+    // The plug is deliberately off (or being forced back on) in these states. Falling
+    // through would read "plug already off" as a person's choice, set NORMAL and stop
+    // the persistent power-restore retries, leaving the modem without power.
+    if (state.machine in [ST_CYCLING, ST_PLUGFAULT]) {
+        logWarn "A restart is already in progress; ignoring the new restart request"
         return
     }
 
