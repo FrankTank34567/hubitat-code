@@ -723,7 +723,14 @@ def processDeviceOnSettled(data) {
     logDescriptionText("Processing(Device On: ${device.displayName})")
     String result
     try {
-        result = applyToDevice(device, deviceType, computeTargets())
+        def prevBright = state.lastAssignedBrightness
+        def targets = computeTargets()
+        if (state.lastAssignedBrightness != prevBright) {
+            // The other lit lights still hold the level from the last full sweep; do not let
+            // the next sweep read that as manual dimming (it re-syncs them to the new target).
+            state.bypassManualOverrideCheck = true
+        }
+        result = applyToDevice(device, deviceType, targets)
     }
     catch (Exception e) {
         result = "error: ${e.message}"

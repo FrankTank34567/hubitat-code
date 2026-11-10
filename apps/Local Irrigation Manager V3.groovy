@@ -1647,7 +1647,7 @@ Object zonePage(def params) {
                   title:"Include in heat-stress syringe",
                   description:"Turn OFF for drip zones: misting through drip does nothing for canopy cooling, and the concentrated water at the probe can pause this zone's moisture learner for hours after every syringe.",
                   defaultValue:true
-            if (!(settings["zoneEnabled_${z}"] ?: true)) paragraph "<font color='orange'>⚠️ Disabled — skipped in all cycles</font>"
+            if ((settings["zoneEnabled_${z}"] == false)) paragraph "<font color='orange'>⚠️ Disabled — skipped in all cycles</font>"
             input "zoneNotes_${z}","text",
                   title:"Notes (optional)",
                   description:"e.g. soil type reason, nozzle brand, last service date — for your future reference",
@@ -1667,7 +1667,7 @@ Object zonePage(def params) {
                 def curState  = hasValve ? safeGetAttr(dev,"valve") : safeGetAttr(dev,"switch")
                 if (curState) paragraph "State: <b>${curState}</b>"
                 input "btnManualStart_${z}","button", title:"🟢 Test Open Zone ${z}", width:3,
-                      disabled:(manualRunning || cycleRunning || !(settings["zoneEnabled_${z}"] ?: true))
+                      disabled:(manualRunning || cycleRunning || (settings["zoneEnabled_${z}"] == false))
                 input "btnManualStop_${z}","button", title:"🔴 Stop Zone ${z}", width:3, disabled:!manualRunning
                 if (manualRunning) paragraph "<font color='green'><b>⏱ Zone ${z} running manually</b></font>"
                 if (activeZone)   paragraph "<font color='blue'><b>💧 Zone ${z} in auto cycle</b></font>"
@@ -5879,7 +5879,7 @@ void irrigationCycle() {
     int zc    = safeZoneCount()
     def queue = []
     (1..zc).each { z ->
-        if (!(settings["zoneEnabled_${z}"] ?: true)) { logI "Zone ${z}: disabled"; return }
+        if ((settings["zoneEnabled_${z}"] == false)) { logI "Zone ${z}: disabled"; return }
         if (!settings["zoneValve_${z}"])             { logW "Zone ${z}: no valve";  return }
         def name = settings["zoneName_${z}"] ?: "Zone ${z}"
 
@@ -6164,7 +6164,7 @@ void startNextZone() {
         int remaining = totalMin - thisCycle
         logI "Zone ${z} (${entry.name}): cycle-and-soak — ${thisCycle} min on, soak, ${remaining} min remaining"
         runIn(thisCycle * 60, "soakAndContinue",
-              [data:[zone:z, idx:idx, name:entry.name, fallback:isFb,
+              [data:[zone:z, idx:idx, name:entry.name, fallback:isFb, soakMin:(entry.soakMin ?: 30),
                      remainingMin:remaining, maxCycleMin:maxCycle, cycleNum:1]])
     } else {
         String tag = isSyr ? ' (syringe — cooling only)' : (isSeed ? ' (seeding)' : (isMidday ? ' (midday top-up)' : ' (no split needed)'))
@@ -6255,7 +6255,7 @@ void resumeAfterSoak(Map data) {
 
     if (newRemain > 0) {
         runIn(thisCycle * 60, "soakAndContinue",
-              [data:[zone:z, idx:data.idx, name:data.name, fallback:(data.fallback ?: false),
+              [data:[zone:z, idx:data.idx, name:data.name, fallback:(data.fallback ?: false), soakMin:data.soakMin,
                      remainingMin:newRemain, maxCycleMin:maxCycle, cycleNum:cycleNum]])
     } else {
         // Last burst — hand off to normal closeZoneAndAdvance
@@ -6275,6 +6275,10 @@ private void manualStartZone(int z) {
     // During spring startup inspection, use a short 60-second burst so you can walk
     // the yard and check each zone's heads quickly without a full runtime.
     boolean inspect = atomicState.startupInspectionActive as boolean
+    // The stop timer is ONE job (runIn overwrites by handler name): starting a second
+    // manual zone would orphan the first zone's timer and leave it open. Close it first.
+    def prevMan = atomicState.manualRunZone
+    if (prevMan != null && (prevMan as int) != z) manualStopZone(prevMan as int)
     if (openValve(z, name)) {
         atomicState.manualRunZone = z
         if (inspect) {
@@ -6545,6 +6549,9 @@ void forecastSkipVerify() {
     sendNotification("notifyOnSkip", "🌦️ Forecast busted: only ${fell} in of rain arrived after the overnight skip. Running the cycle now; watering ends at failsafe.")
     atomicState.verifyBypassPredictive = true
     irrigationCycle()
+    // One-shot: if the run exited before consuming it (wind, pause, freeze...), it must
+    // not bypass the NEXT night's forecast skip.
+    atomicState.verifyBypassPredictive = false
 }
 
 private boolean isInSeason() {

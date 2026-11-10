@@ -578,6 +578,8 @@ private void initialize() {
         logInfo "Settings saved during an active ${state.activeTier} alarm - rescheduling announcement repeats"
         scheduleRepeat("repeatAnnouncement", repeatSettingFor(state.activeTier),
                        [tier: state.activeTier, room: (state.activeRooms?.values()?.join(", ") ?: "unknown")])
+        // The 60-second test timer was cancelled too; without it a test never ends.
+        if (state.testActive) runIn(60, "clearTestAlarm")
     }
  
     def manualTestCount = protectDevices?.count { it.hasAttribute("manualTestActive") } ?: 0
@@ -658,21 +660,23 @@ def smokeDetailHandler(evt) {
     }
 }
  
+// Keyed separately from the smoke handlers ("co-" prefix) so a combined smoke+CO
+// detector clearing one hazard does not clear the other.
 def coHandler(evt) {
     logDebug "coHandler: ${evt.displayName} = ${evt.value}"
     if (evt.value == "detected") {
-        addActiveRoom(evt.deviceId.toString(), evt.displayName)
+        addActiveRoom("co-" + evt.deviceId, evt.displayName)
         activateTier(TIER_CO, evt.displayName)
     }
     else if (evt.value == "tested") {
         // A CO hardware test is not CO present: use the smoke tier, not a full CO evacuation.
-        addActiveRoom(evt.deviceId.toString(), evt.displayName)
+        addActiveRoom("co-" + evt.deviceId, evt.displayName)
         if (state.activeTier != TIER_CO) {
             activateTier(TIER_SMOKE, evt.displayName)
         }
     }
     else if (evt.value == "clear") {
-        removeActiveRoom(evt.deviceId.toString())
+        removeActiveRoom("co-" + evt.deviceId)
         tryClear("CO clear from ${evt.displayName}")
     }
 }
@@ -801,6 +805,10 @@ private void activateTier(String tier, String roomName) {
     // Escalation: stop the previous tier's flash loop before starting a new one.
     unschedule("flashStep")
     unschedule("announceAfterFlash")
+    unschedule("activateWarningLights")
+    unschedule("activateSmokeLights")
+    unschedule("activateCOLights")
+    unschedule("repeatAnnouncement")
     state.flashState = [:]
  
     logInfo "Activating ${tier.toUpperCase()} response for: ${roomName}"
@@ -1086,7 +1094,12 @@ private Map managedDevicesByDni() {
 // ---------------------------------------------------------------------------
  
 private void flashAndHold(lights, Map color) {
-    if (!lights) return
+    if (!lights) {
+        // Nothing to flash: the announcements and notifications normally follow the
+        // flash, so start them directly or this tier would stay silent.
+        runIn(1, "announceAfterFlash")
+        return
+    }
  
     String flashKey = "flash_${now()}".toString()
     Map all = (state.flashState ?: [:]) as Map

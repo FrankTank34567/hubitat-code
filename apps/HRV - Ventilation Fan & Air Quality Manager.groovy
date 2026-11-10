@@ -2285,7 +2285,7 @@ void handleManualOverride(boolean fanNowOn) {
     notify("manualOverride", pushMsg, ttsMsg,
            [device: fanName(), fan: fanName(), state: (fanNowOn ? "on" : "off"), policy: policyDesc])
 
-    if (settings.manualOverridePolicy == MANUAL_RESUME_TIMED) {
+    if ((settings.manualOverridePolicy ?: MANUAL_RESUME_TIMED) == MANUAL_RESUME_TIMED) {
         int mins = settings.manualOverrideMinutes ?: 30
         runIn(mins * 60, "resumeFromManualOverride")
         logI "Manual override: will auto-resume in ${mins} minutes"
@@ -2438,7 +2438,7 @@ def outdoorTempHandler(evt) {
 
 def presenceHandler(evt) {
     logI "Presence: ${evt.device.displayName}=${evt.value}"
-    if (evt.value == "present" && (settings.runOnArrival ?: true)) {
+    if (evt.value == "present" && (settings.runOnArrival != false)) {
         runIn(5, "handleArrival")
     } else {
         runIn(2, "evaluateConditions")
@@ -2569,10 +2569,14 @@ def pollAirNow() {
                     // sample, and a spurious low value could falsely clear the
                     // wildfire guard. Skip it and keep the previous reading.
                     Integer prevAqi = atomicState.airnowLastAqi as Integer
-                    if (prevAqi != null && prevAqi >= 50 && aqi < (prevAqi * 0.25)) {
+                    // Only ONE sample is rejected: a second low reading in a row is a real
+                    // clearing (otherwise the old high value would be kept forever).
+                    if (prevAqi != null && prevAqi >= 50 && aqi < (prevAqi * 0.25) && !(atomicState.airnowDropRejected ?: false)) {
+                        atomicState.airnowDropRejected = true
                         logW "AirNow: ignoring implausible drop ${prevAqi} -> ${aqi} AQI (likely a feed glitch); keeping previous reading"
                         return
                     }
+                    atomicState.airnowDropRejected = false
                     atomicState.airnowLastAqi      = aqi
                     atomicState.airnowLastCategory = category
                     atomicState.airnowLastPoll     = now()
@@ -2895,7 +2899,7 @@ def evaluateConditions() {
     if (atomicState.manualOverrideActive) {
         logD "Manual override active — only safety guards apply"
         // Safety guards still run even during manual override if configured
-        if (settings.guardsDuringManual ?: true) {
+        if (settings.guardsDuringManual != false) {
             boolean anyGuard = (atomicState.wildfireGuardActive ?: false) || (atomicState.freezeGuardActive ?: false)
             if (anyGuard && (atomicState.fanRunning ?: false)) {
                 logW "Safety guard triggered during manual override — stopping fan"
@@ -2911,7 +2915,7 @@ def evaluateConditions() {
     boolean anyGuard = wfGuard || frGuard
 
     // ── PRIORITY 1: CO₂ EMERGENCY OVERRIDE ───────────────────────────────────
-    if (fanSwitch && anyGuard && (settings.co2EmergencyEnabled ?: true) &&
+    if (fanSwitch && anyGuard && (settings.co2EmergencyEnabled != false) &&
         !atomicState.emergencyVentRunning && co2EmergencyNeeded()) {
         startEmergencyVent()
         return
@@ -2938,7 +2942,17 @@ def evaluateConditions() {
 
     // ── PRIORITY 2: SAFETY GUARDS ─────────────────────────────────────────────
     if (anyGuard) {
-        if (running) stopFan("${wfGuard ? "wildfire" : "freeze"} guard active")
+        // A CO2 emergency vent in progress is allowed to run despite the guard until
+        // endEmergencyVent fires. If that timer was lost (settings saved mid-run wipes
+        // schedules), end the vent here once it is overdue.
+        boolean ventActive = (atomicState.emergencyVentRunning ?: false) && running
+        long ventMaxMs = (((settings.emergencyVentMinutes ?: DEFAULT_EMERGENCY_DUR) as Integer) + 2) * 60000L
+        if (ventActive && (!atomicState.fanStartedAt || (now() - (atomicState.fanStartedAt as Long)) >= ventMaxMs)) {
+            unschedule("endEmergencyVent")
+            endEmergencyVent()
+        } else if (running && !ventActive) {
+            stopFan("${wfGuard ? "wildfire" : "freeze"} guard active")
+        }
         controlPurifiers(indoorPm25High())
         return
     }
@@ -3092,8 +3106,12 @@ boolean inFanSchedule() {
 // ============================================================
 
 boolean co2EmergencyNeeded() {
-    if (!(settings.co2EmergencyEnabled ?: true)) return false
-    long guardSince = atomicState.wildfireGuardSince ?: atomicState.freezeGuardSince ?: 0L
+    if (!(settings.co2EmergencyEnabled != false)) return false
+    // Only the ACTIVE guard's start time counts (wildfireGuardSince is never cleared,
+    // so a past smoke event must not shorten the delay for a later freeze lockout).
+    long guardSince = 0L
+    if (atomicState.wildfireGuardActive)    guardSince = (atomicState.wildfireGuardSince ?: 0L) as Long
+    else if (atomicState.freezeGuardActive) guardSince = (atomicState.freezeGuardSince   ?: 0L) as Long
     if (guardSince == 0) return false
     long guardMinutes = (now() - guardSince) / 60000
     if (guardMinutes < (settings.emergencyAfterMinutes ?: DEFAULT_EMERGENCY_AFTER)) return false
@@ -3583,14 +3601,14 @@ void evaluatePurifier(device, boolean pm25High, boolean guardActive, boolean par
     switch (policy) {
         case "alwaysOn":
             // App turns on when warranted but NEVER turns off — user controls shutoff
-            boolean turnOn = pm25High || (guardActive && (settings.purifiersOnWhenGuard ?: true)) || parallelMode
+            boolean turnOn = pm25High || (guardActive && (settings.purifiersOnWhenGuard != false)) || parallelMode
             if (turnOn) purifierOn(device, deviceId, pm25High ? "PM2.5 elevated" : guardActive ? "guard active" : "parallel mode")
             // Never call purifierOff for alwaysOn
             break
 
         case "scheduled":
             boolean inWindow      = inPurifierSchedule(deviceId)
-            boolean safetyOverride = guardActive && (settings.purifiersOnWhenGuard ?: true)
+            boolean safetyOverride = guardActive && (settings.purifiersOnWhenGuard != false)
             if (safetyOverride && !inWindow) {
                 // Safety event fires even outside scheduled window — ASHRAE GL44-2024
                 purifierOn(device, deviceId, "safety guard override (outside schedule window)")
@@ -3616,7 +3634,7 @@ void evaluatePurifier(device, boolean pm25High, boolean guardActive, boolean par
 }
 
 void evaluatePurifierAuto(device, String deviceId, boolean pm25High, boolean guardActive, boolean parallelMode) {
-    boolean turnOn     = pm25High || (guardActive && (settings.purifiersOnWhenGuard ?: true)) || parallelMode
+    boolean turnOn     = pm25High || (guardActive && (settings.purifiersOnWhenGuard != false)) || parallelMode
     boolean currentOn  = device.currentValue("switch") == "on"
     if (turnOn && !currentOn) {
         String reason = [pm25High ? "PM2.5 elevated" : null,
@@ -3832,7 +3850,7 @@ boolean isQuietHours(String eventKey) {
     if (!(settings.quietHoursEnabled ?: false)) return false
     // Safety alerts always announce if configured
     boolean isSafetyEvent = eventKey in ["wildfireOn", "freezeOn", "co2Override", "ventAborted"]
-    if (isSafetyEvent && (settings.quietAllowSafetyAlerts ?: true)) return false
+    if (isSafetyEvent && (settings.quietAllowSafetyAlerts != false)) return false
     if (!settings.quietStart || !settings.quietEnd) return false
     try {
         Date now      = new Date()
