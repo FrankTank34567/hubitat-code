@@ -1,0 +1,137 @@
+// Offline test harness for drivers/Valetudo Robot Vacuum.groovy: mocks the Hubitat runtime and
+// serves REST GETs from fixtures captured from the real robots.
+import groovy.json.JsonSlurper
+import groovy.json.JsonOutput
+
+class H {
+    static int pass = 0, fail = 0
+    static void check(String name, boolean ok, String detail = "") {
+        if (ok) { pass++; println "PASS  ${name}" } else { fail++; println "FAIL  ${name}  ${detail}" }
+    }
+}
+
+def newDriver(String fixtureName, Map prefs = [:]) {
+    def fx = new JsonSlurper().parse(new File("fixtures/${fixtureName}.json"))
+    def events = [], puts = [], pubs = [], logs = [], gets = []
+    def attrs = [mqttStatus: "connected"]
+    def st = [:]
+    def settings = [robotIp: "10.0.0.9", logEnable: false, txtEnable: true, topicPrefix: "valetudo",
+                    robotIdentifier: "Quay2", restFallback: true] + prefs
+    def b = new Binding()
+    settings.each { k, v -> b.setVariable(k, v) }
+    b.setVariable("settings", settings)
+    b.setVariable("state", st)
+    b.setVariable("device", [displayName: "T", id: 1, currentValue: { String n -> attrs[n] },
+                             updateSetting: { a, c -> }])
+    b.setVariable("log", [info: { logs << "I " + it }, warn: { logs << "W " + it },
+                          debug: { logs << "D " + it }, error: { logs << "E " + it }])
+    b.setVariable("interfaces", [mqtt: [publish: { t, p, q, r -> pubs << [t, p] }, isConnected: { true },
+                                        parseMessage: { d -> new JsonSlurper().parseText(d) }, subscribe: { t, q -> }, connect: { a, b2, c, d -> }, disconnect: {}]])
+    b.setVariable("sendEvent", { Map m -> events << m; attrs[m.name] = m.value })
+    b.setVariable("runIn", { Object[] a -> })
+    b.setVariable("runEvery5Minutes", { a -> })
+    b.setVariable("unschedule", { a -> })
+    b.setVariable("now", { System.currentTimeMillis() })
+    b.setVariable("httpGet", { Map p, Closure c ->
+        String path = (p.uri as String).replaceFirst(/^http:\/\/[^\/]+/, "")
+        gets << path
+        def data = fx[path]
+        if (data == null || (data instanceof Map && data.__error)) throw new RuntimeException("404 ${path}")
+        c([data: data, status: 200])
+    })
+    b.setVariable("httpPut", { Map p, Closure c -> puts << [p.uri, p.body]; c([status: 200]) })
+    def d = new ValetudoDriver(b)
+    return [d: d, events: events, puts: puts, pubs: pubs, logs: logs, gets: gets, attrs: attrs, st: st, settings: settings, b: b]
+}
+
+def lastEvent(ctx, String n) { ctx.events.findAll { it.name == n }.collect { it.value }.with { it ? it[-1] : null } }
+
+// ── V50 ─────────────────────────────────────────────────────────────────────
+def v = newDriver("v50")
+// Before discovery: old behaviour, everything passes.
+v.d.setFanSpeed("turbo")
+H.check("pre-discovery: turbo fan preset still sent (3.12.0 behaviour)", v.pubs.any { it[1] == "turbo" })
+v.pubs.clear()
+
+v.d.discoverRobot()
+H.check("discover: robotModel", lastEvent(v, "robotModel") == "MOVA V50", "${lastEvent(v,'robotModel')}")
+H.check("discover: unsupportedCommands none (V50 has all 23 capabilities)", lastEvent(v, "unsupportedCommands") == "none", "${lastEvent(v,'unsupportedCommands')}")
+def so = new JsonSlurper().parseText(lastEvent(v, "supportedOptions"))
+H.check("discover: fan options", so.fanSpeed == ["low","medium","high","max"], "${so.fanSpeed}")
+H.check("discover: water options", so.waterLevel == ["min","low","medium","high","max"], "${so.waterLevel}")
+H.check("discover: routes/intervals/carpet present", so.cleanRoute && so.autoEmptyInterval && so.carpetSensorMode, "${so}")
+H.check("discover: dustbin attachment not supported", lastEvent(v, "attachment_dustbin") == "not supported")
+H.check("discover: watertank attachment not supported", lastEvent(v, "attachment_watertank") == "not supported")
+H.check("discover: mop attachment untouched", lastEvent(v, "attachment_mop") == null)
+
+v.d.setFanSpeed("turbo")
+H.check("V50: fan 'turbo' blocked, nothing published", v.pubs.isEmpty() && v.logs.any { it.startsWith("W") && it.contains("Supported: low, medium, high, max") })
+v.d.setFanSpeed("MAX")
+H.check("V50: fan 'MAX' sent in robot casing 'max'", v.pubs.any { it[0].endsWith("FanSpeedControlCapability/preset/set") && it[1] == "max" })
+v.d.setWaterLevel("off")
+H.check("V50: water 'off' blocked", !v.pubs.any { it[0].contains("WaterUsage") })
+v.d.setCleanRoute("Deep")
+H.check("V50: clean route 'Deep' -> PUT route deep", v.puts.any { it[0].endsWith("CleanRouteControlCapability") && it[1].contains('"deep"') })
+v.d.setCleanRoute("turbo")
+H.check("V50: bad clean route blocked", v.puts.count { it[0].endsWith("CleanRouteControlCapability") } == 1)
+
+v.d.refresh()
+H.check("refresh: battery 90", lastEvent(v, "battery") == 90, "${lastEvent(v,'battery')}")
+H.check("refresh: before quirks, batteryStatus is raw 'none'", lastEvent(v, "batteryStatus") == "none", "${lastEvent(v,'batteryStatus')}")
+v.d.refreshQuirks()
+H.check("quirks: Charging Limit cached", v.st.quirkValues?."Charging Limit" == "90%")
+H.check("battery: docked at 90% limit -> charged", lastEvent(v, "batteryStatus") == "charged", "${lastEvent(v,'batteryStatus')}")
+
+int putsBefore = v.puts.size()
+v.d.setFanSpeedTurbo("on")
+H.check("V50: setFanSpeedTurbo blocked, no PUT, no breaker hit",
+        v.puts.size() == putsBefore && (v.st.restFailCount ?: 0) == 0 && v.logs.any { it.contains("has no 'Fan Speed Turbo' quirk") })
+
+v.d.setQuirkByTitle("charging limit", "100%")
+H.check("V50: setQuirkByTitle Charging Limit 100% -> PUT with V50 UUID",
+        v.puts.any { it[1]?.contains("afa79ff9-2078-4d39-b960-c61c2baa42b1") && it[1].contains("100%") })
+
+// MQTT path: level below limit -> raw flag; back at limit -> charged
+v.d.parse(JsonOutput.toJson([topic: "valetudo/Quay2/BatteryStateAttribute/level", payload: "85"]))
+H.check("mqtt: 85% docked with flag none -> none", lastEvent(v, "batteryStatus") == "none", "${lastEvent(v,'batteryStatus')}")
+v.d.parse(JsonOutput.toJson([topic: "valetudo/Quay2/BatteryStateAttribute/level", payload: "90"]))
+H.check("mqtt: 90% docked -> charged", lastEvent(v, "batteryStatus") == "charged")
+v.d.parse(JsonOutput.toJson([topic: "valetudo/Quay2/StatusStateAttribute/status", payload: "cleaning"]))
+H.check("mqtt: leaves dock -> none", lastEvent(v, "batteryStatus") == "none")
+v.d.parse(JsonOutput.toJson([topic: "valetudo/Quay2/BatteryStateAttribute/status", payload: "discharging"]))
+H.check("mqtt: real flag passes through", lastEvent(v, "batteryStatus") == "discharging")
+
+// Alert classification
+H.check("alert: drainage -> supply", v.d.severityOf("Abnormal dock drainage. Check if the drain pipe is clogged.") == "supply")
+H.check("alert: gyroscope still fault", v.d.severityOf("Gyroscope sensor error") == "fault")
+H.check("alert: cannot reach target still supply", v.d.severityOf("Cannot reach target") == "supply")
+H.check("alert: wheel still fault", v.d.severityOf("Wheel lost floor contact") == "fault")
+
+// enforceSupported OFF -> 3.12.0 behaviour
+def v2 = newDriver("v50", [enforceSupported: false])
+v2.d.discoverRobot(); v2.d.refreshQuirks()
+v2.d.setFanSpeed("turbo")
+H.check("enforce OFF: turbo preset sent", v2.pubs.any { it[1] == "turbo" })
+v2.d.setFanSpeedTurbo("on")
+H.check("enforce OFF: turbo quirk falls back to X40 UUID (old behaviour)", v2.puts.any { it[1]?.contains("017c40b7") })
+
+// refreshSettings skips capabilities discovery says are missing
+def v3 = newDriver("v50")
+v3.d.discoverRobot()
+v3.st.robotCaps = v3.st.robotCaps.findAll { it != "DoNotDisturbCapability" }
+v3.gets.clear(); v3.d.refreshSettings()
+H.check("refreshSettings: skips missing capability", !v3.gets.any { it.contains("DoNotDisturb") } && v3.gets.any { it.contains("CleanRoute") })
+v3.d.setDoNotDisturb("on", "22:00", "08:00")
+H.check("command for missing capability blocked", !v3.puts.any { it[0].contains("DoNotDisturb") } && v3.logs.any { it.contains("setDoNotDisturb: not supported") })
+
+// ── X40 Ultra ──────────────────────────────────────────────────────────────
+def x = newDriver("x40u")
+x.d.discoverRobot(); x.d.refreshQuirks()
+H.check("X40U: robotModel", lastEvent(x, "robotModel") == "Dreame X40 Ultra", "${lastEvent(x,'robotModel')}")
+x.d.setFanSpeedTurbo("on")
+H.check("X40U: setFanSpeedTurbo sends its own discovered UUID", x.puts.any { it[0].endsWith("QuirksCapability") && it[1].contains('"on"') })
+x.d.refresh()
+H.check("X40U: no Charging Limit quirk -> batteryStatus is raw flag", lastEvent(x, "batteryStatus") != null && x.st.quirkValues?."Charging Limit" == null)
+
+println "\n${H.pass} passed, ${H.fail} failed"
+System.exit(H.fail ? 1 : 0)

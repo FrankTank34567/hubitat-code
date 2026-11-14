@@ -11,3 +11,4 @@
 | apps/Local Irrigation Manager V3.groovy | app | FrankTank34567 | 3.4.0-dev-waterbalance | 1025 | 2026-11-09 |
 | apps/Modem Power Cycle Watchdog.groovy | app | franktank |  | 1037 | 2026-11-09 |
 | drivers/Frame Notifier.groovy | driver | epaperframe |  | 2208 | 2026-11-09 |
+| drivers/Valetudo Robot Vacuum.groovy | driver | valetudo-hubitat |  | 2157 | 2026-11-14 |

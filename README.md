@@ -18,6 +18,7 @@ Private repo. Refresh with `python -I sync_from_hub.py` (read-only GETs against 
 ## Drivers
 
 - **Frame Notifier** – sends notification text to the e-paper frame (configured via its "Frame address" preference).
+- **Valetudo Robot Vacuum** – MQTT + REST driver for Valetudo robots (Dreame X40 Master/Ultra, MOVA V50); learns each robot's capabilities and blocks unsupported commands. Off-hub tests: `tests/valetudo/run_tests.sh`.
 
 ## Notes
 
