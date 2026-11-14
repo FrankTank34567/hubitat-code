@@ -1,0 +1,495 @@
+{
+ "/api/v2/robot": {
+  "manufacturer": "MOVA",
+  "modelName": "V50",
+  "modelDetails": {
+   "supportedAttachments": [
+    "mop"
+   ],
+   "supportedDockComponents": [
+    "water_tank_clean",
+    "water_tank_dirty",
+    "detergent",
+    "dustbag"
+   ]
+  },
+  "implementation": "DreameMovaV50UltraValetudoRobot"
+ },
+ "/api/v2/robot/capabilities": [
+  "WifiConfigurationCapability",
+  "WifiScanCapability",
+  "BasicControlCapability",
+  "FanSpeedControlCapability",
+  "LocateCapability",
+  "MapSegmentEditCapability",
+  "MapSegmentRenameCapability",
+  "MapResetCapability",
+  "CombinedVirtualRestrictionsCapability",
+  "SpeakerVolumeControlCapability",
+  "SpeakerTestCapability",
+  "PendingMapChangeHandlingCapability",
+  "TotalStatisticsCapability",
+  "CurrentStatisticsCapability",
+  "VoicePackManagementCapability",
+  "HighResolutionManualControlCapability",
+  "DoNotDisturbCapability",
+  "MappingPassCapability",
+  "MapSegmentationCapability",
+  "WaterUsageControlCapability",
+  "ZoneCleaningCapability",
+  "ConsumableMonitoringCapability",
+  "OperationModeControlCapability",
+  "CarpetSensorModeControlCapability",
+  "ObstacleImagesCapability",
+  "MapSegmentMaterialControlCapability",
+  "MapAnnotationsCapability",
+  "DuststreamingCapability",
+  "CarpetModeControlCapability",
+  "KeyLockCapability",
+  "AutoEmptyDockManualTriggerCapability",
+  "MopDockCleanManualTriggerCapability",
+  "MopDockDryManualTriggerCapability",
+  "GoToLocationCapability",
+  "ObstacleAvoidanceControlCapability",
+  "PetObstacleAvoidanceControlCapability",
+  "CollisionAvoidantNavigationControlCapability",
+  "AutoEmptyDockAutoEmptyIntervalControlCapability",
+  "MopExtensionControlCapability",
+  "CameraLightControlCapability",
+  "MopDockMopWashTemperatureControlCapability",
+  "MopTwistControlCapability",
+  "MopExtensionFurnitureLegHandlingControlCapability",
+  "MopDockMopAutoDryingControlCapability",
+  "FloorMaterialDirectionAwareNavigationControlCapability",
+  "CleanRouteControlCapability",
+  "MopDockMopDryingTimeControlCapability",
+  "QuirksCapability"
+ ],
+ "/api/v2/robot/state/attributes": [
+  {
+   "__class": "AttachmentStateAttribute",
+   "metaData": {},
+   "type": "mop",
+   "attached": true
+  },
+  {
+   "__class": "DockComponentStateAttribute",
+   "metaData": {},
+   "type": "water_tank_clean",
+   "value": "empty"
+  },
+  {
+   "__class": "DockComponentStateAttribute",
+   "metaData": {},
+   "type": "water_tank_dirty",
+   "value": "ok"
+  },
+  {
+   "__class": "DockComponentStateAttribute",
+   "metaData": {},
+   "type": "detergent",
+   "value": "ok"
+  },
+  {
+   "__class": "DockComponentStateAttribute",
+   "metaData": {},
+   "type": "dustbag",
+   "value": "ok"
+  },
+  {
+   "__class": "DockStatusStateAttribute",
+   "metaData": {},
+   "value": "idle"
+  },
+  {
+   "__class": "StatusStateAttribute",
+   "metaData": {},
+   "value": "docked",
+   "flag": "none"
+  },
+  {
+   "__class": "BatteryStateAttribute",
+   "metaData": {},
+   "level": 90,
+   "flag": "none"
+  },
+  {
+   "__class": "PresetSelectionStateAttribute",
+   "metaData": {
+    "rawValue": 0
+   },
+   "type": "fan_speed",
+   "value": "low"
+  },
+  {
+   "__class": "PresetSelectionStateAttribute",
+   "metaData": {
+    "rawValue": 32
+   },
+   "type": "water_grade",
+   "value": "max"
+  },
+  {
+   "__class": "PresetSelectionStateAttribute",
+   "metaData": {},
+   "type": "operation_mode",
+   "value": "vacuum_and_mop"
+  }
+ ],
+ "/api/v2/mqtt/status": {
+  "state": "ready",
+  "stats": {
+   "messages": {
+    "count": {
+     "received": 1,
+     "sent": 472
+    },
+    "bytes": {
+     "received": 74,
+     "sent": 141697
+    }
+   },
+   "connection": {
+    "connects": 1,
+    "disconnects": 1,
+    "reconnects": 73,
+    "errors": 74
+   }
+  }
+ },
+ "/api/v2/robot/capabilities/QuirksCapability": [
+  {
+   "id": "ae753798-aa4f-4b35-a60c-91e7e5ae76f3",
+   "options": [
+    "select_to_trigger",
+    "trigger"
+   ],
+   "title": "Mop Dock Auto Repair",
+   "description": "If the mops don't stay wet during cleaning, there might be air in the system,preventing the water tank in the robot from being filled. In that case, try running this a few times.",
+   "value": "select_to_trigger"
+  },
+  {
+   "id": "3e1b0851-3a5a-4943-bea6-dea3d7284bff",
+   "options": [
+    "select_to_trigger",
+    "trigger"
+   ],
+   "title": "Drain internal water tank",
+   "description": "Drain the internal water tank of the robot into the dock. This can be useful if the robot is to be transported or stored for a while. May take up to 3 minutes.",
+   "value": "select_to_trigger"
+  },
+  {
+   "id": "42c7db4b-2cad-4801-a526-44de8944a41f",
+   "options": [
+    "select_to_trigger",
+    "trigger"
+   ],
+   "title": "Mop Dock Cleaning Process",
+   "description": "Trigger a manual base cleaning. The robot needs to be docked. Keep a brush ready and follow the instructions the robot will give you.",
+   "value": "select_to_trigger"
+  },
+  {
+   "id": "86094736-d66e-40c3-807c-3f5ef33cbf09",
+   "options": [
+    "select_to_trigger",
+    "trigger"
+   ],
+   "title": "Water Hookup Test",
+   "description": "Test if the permanent water hookup has been installed correctly. Listen to the robots' voice prompts for status updates. If errors should occur, they will be raised as ValetudoEvents.",
+   "value": "select_to_trigger"
+  },
+  {
+   "id": "f8cb91ab-a47a-445f-b300-0aac0d4937c0",
+   "options": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "title": "Carpet Mode Sensitivity",
+   "description": "Depending on the type of carpet in your home, the carpet mode might not trigger as expected. This tunable can help in these situations.",
+   "value": "medium"
+  },
+  {
+   "id": "a6709b18-57af-4e11-8b4c-8ae33147ab34",
+   "options": [
+    "every_segment",
+    "every_5_m2",
+    "every_10_m2",
+    "every_15_m2",
+    "every_20_m2",
+    "every_25_m2"
+   ],
+   "title": "Mop Cleaning Frequency",
+   "description": "Determine how often the robot should clean and re-wet its mopping pads during a cleanup.",
+   "value": "every_20_m2"
+  },
+  {
+   "id": "a2a03d42-c710-45e5-b53a-4bc62778589f",
+   "options": [
+    "on",
+    "off",
+    "Missing detergent cartridge"
+   ],
+   "title": "Detergent",
+   "description": "Select if the Dock should automatically add detergent to the water",
+   "value": "on"
+  },
+  {
+   "id": "66adac0f-0a16-4049-b6ac-080ef702bb39",
+   "options": [
+    "Wet",
+    "Dry"
+   ],
+   "title": "Pre-Wet Mops",
+   "description": "Select \"dry\" if you don't want the dock to wet the mops before cleaning. This can be useful if there's a spill that you want to mop up.",
+   "value": "Wet"
+  },
+  {
+   "id": "9450a668-88d7-4ff3-9455-a78b485fb33b",
+   "options": [
+    "on",
+    "off"
+   ],
+   "title": "Deep carpet cleaning",
+   "description": "When enabled, the robot will automatically slowly clean detected carpets with twice the cleanup passes in alternating directions.",
+   "value": "on"
+  },
+  {
+   "id": "2d4ce805-ebf7-4dcf-b919-c5fe4d4f2de3",
+   "options": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "title": "Mop Dock Mop Wash Intensity",
+   "description": "Higher settings mean more water and longer wash cycles.",
+   "value": "medium"
+  },
+  {
+   "id": "e560d60c-76de-4ccc-8c01-8ccbcece850e",
+   "options": [
+    "on",
+    "off"
+   ],
+   "title": "Edge Extension: Side Brush",
+   "description": "Automatically extend the side brush to further reach into corners or below furniture.",
+   "value": "on"
+  },
+  {
+   "id": "8f6a7013-794e-40d9-9bbe-8fdeed7c0b9d",
+   "options": [
+    "automatic",
+    "each_cleanup",
+    "every_7_days"
+   ],
+   "title": "Edge Extension: Frequency",
+   "description": "Select when/how often mop and side brush (each when enabled) should be extended to increase coverage in corners and close to walls.",
+   "value": "each_cleanup"
+  },
+  {
+   "id": "4a52e16b-3c73-479d-b308-7f0bbdde0884",
+   "options": [
+    "on",
+    "off"
+   ],
+   "title": "Detach Mops",
+   "description": "When enabled, the robot will leave the mop pads in the dock when running a vacuum-only cleanup.",
+   "value": "on"
+  },
+  {
+   "id": "d23d7e7e-ef74-42a6-8a0a-4163742e437b",
+   "options": [
+    "on",
+    "off"
+   ],
+   "title": "Side Brush on Carpet",
+   "description": "Select if the side brush should spin when cleaning carpets.",
+   "value": "on"
+  },
+  {
+   "id": "3d6cd658-c72a-48d9-ba54-38cf2d26e2f6",
+   "options": [
+    "off",
+    "on"
+   ],
+   "title": "Carpet First",
+   "description": "When enabled, the robot will first clean all carpet areas before then continuing with the rest of the cleanup.",
+   "value": "off"
+  },
+  {
+   "id": "a09a213f-703d-4b3e-aafe-af55356f2c45",
+   "options": [
+    "on",
+    "off"
+   ],
+   "title": "ErP Power Saving",
+   "description": "When enabled, to comply with EU Regulation 2023/826, the robot will aggressively powersave. The way they've implemented it cut corners, leading to it being quite hard on the battery, constantly looping through letting it run down ~7%, then recharging. From my understanding, this is worse than just idling with a fully charged battery. I thus highly recommend turning this off. The miniscule power savings are not worth the extra spending of having to buy a new battery.",
+   "value": "off"
+  },
+  {
+   "id": "afa79ff9-2078-4d39-b960-c61c2baa42b1",
+   "options": [
+    "100%",
+    "95%",
+    "90%",
+    "85%",
+    "80%"
+   ],
+   "title": "Charging Limit",
+   "description": "Only charge the battery to the specified SoC. May increase battery longevity.",
+   "value": "90%"
+  },
+  {
+   "id": "78d15359-c431-4602-99ed-17fd74a6d91d",
+   "options": [
+    "on",
+    "off"
+   ],
+   "title": "Dustbag Auto-Drying",
+   "description": "When enabled, the robot will dry the dustbag after every mopping cleanup. Unless you live in super humid climates, this doesn't make sense probably 98% of the time, wasting almost an additional 200Wh after every single cleanup. I highly recommend turning this off and only using the dustbag drying as needed (if at all).",
+   "value": "on"
+  },
+  {
+   "id": "9e194ec7-bc25-4187-8163-b796f213c3c3",
+   "options": [
+    "drying",
+    "idle",
+    "paused"
+   ],
+   "title": "Dustbag Drying",
+   "description": "Control the dustbag drying feature and observe its state.",
+   "value": "idle"
+  },
+  {
+   "id": "a8fcf6a3-80ed-4149-89ef-d81936b8e080",
+   "options": [
+    "sequential",
+    "synchronized"
+   ],
+   "title": "Hurdle Crossing Mode",
+   "description": "Select if the robot should cross hurdles, thresholds and similar either with both wheels at the same time, or one after the other.",
+   "value": "sequential"
+  },
+  {
+   "id": "15f0a896-c563-4560-b897-a586bd33a312",
+   "options": [
+    "on",
+    "off"
+   ],
+   "title": "Obstacle Retry Clean Later",
+   "description": "When enabled, the robot will skip cleaning around temporary obstacles such as humans or pets and come back to those areas later, assuming that the obstacle will then be gone.",
+   "value": "on"
+  }
+ ],
+ "/api/v2/robot/capabilities/MapSegmentationCapability": [
+  {
+   "__class": "ValetudoMapSegment",
+   "metaData": {},
+   "id": "1",
+   "material": "tile"
+  },
+  {
+   "__class": "ValetudoMapSegment",
+   "metaData": {},
+   "id": "2",
+   "material": "tile"
+  },
+  {
+   "__class": "ValetudoMapSegment",
+   "metaData": {},
+   "id": "3",
+   "material": "tile"
+  },
+  {
+   "__class": "ValetudoMapSegment",
+   "metaData": {},
+   "id": "4",
+   "material": "tile"
+  },
+  {
+   "__class": "ValetudoMapSegment",
+   "metaData": {},
+   "id": "5",
+   "material": "tile"
+  },
+  {
+   "__class": "ValetudoMapSegment",
+   "metaData": {},
+   "id": "6",
+   "material": "tile"
+  }
+ ],
+ "/api/v2/robot/capabilities/FanSpeedControlCapability/presets": [
+  "low",
+  "medium",
+  "high",
+  "max"
+ ],
+ "/api/v2/robot/capabilities/WaterUsageControlCapability/presets": [
+  "min",
+  "low",
+  "medium",
+  "high",
+  "max"
+ ],
+ "/api/v2/robot/capabilities/OperationModeControlCapability/presets": [
+  "vacuum_and_mop",
+  "mop",
+  "vacuum",
+  "vacuum_then_mop"
+ ],
+ "/api/v2/robot/capabilities/CarpetSensorModeControlCapability/properties": {
+  "supportedModes": [
+   "avoid",
+   "off",
+   "lift",
+   "detach"
+  ]
+ },
+ "/api/v2/robot/capabilities/CleanRouteControlCapability/properties": {
+  "supportedRoutes": [
+   "quick",
+   "normal",
+   "intensive",
+   "deep"
+  ],
+  "mopOnly": [
+   "intensive",
+   "deep"
+  ],
+  "oneTime": []
+ },
+ "/api/v2/robot/capabilities/AutoEmptyDockAutoEmptyIntervalControlCapability/properties": {
+  "supportedIntervals": [
+   "off",
+   "normal",
+   "frequent",
+   "infrequent"
+  ]
+ },
+ "/api/v2/robot/capabilities/DoNotDisturbCapability": {
+  "__class": "ValetudoDNDConfiguration",
+  "metaData": {},
+  "enabled": false,
+  "start": {
+   "hour": 22,
+   "minute": 0
+  },
+  "end": {
+   "hour": 8,
+   "minute": 0
+  }
+ },
+ "/api/v2/robot/capabilities/CleanRouteControlCapability": {
+  "route": "deep"
+ },
+ "/api/v2/robot/capabilities/AutoEmptyDockAutoEmptyIntervalControlCapability": {
+  "interval": "frequent"
+ },
+ "/api/v2/robot/capabilities/MopDockMopAutoDryingControlCapability": {
+  "enabled": true
+ },
+ "/api/v2/robot/capabilities/CarpetSensorModeControlCapability": {
+  "mode": "lift"
+ }
+}
