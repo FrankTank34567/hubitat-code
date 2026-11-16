@@ -14,6 +14,7 @@ Private repo. Refresh with `python -I sync_from_hub.py` (read-only GETs against 
 - **HRV / Ventilation Fan & Air Quality Manager** – automates ventilation fans and air purifiers from CO2, PM2.5, outdoor air quality, freeze protection and presence.
 - **Local Irrigation Manager V3** – local-first irrigation using FAO-56 Penman-Monteith ET, per-zone soil gating and valve monitoring.
 - **Modem Power Cycle Watchdog** – restarts the modem via a smart plug when the internet is down and the modem is at fault, with restart-loop guards.
+- **UniFi Protect Event Watchdog** – detects a silently dead UniFi Protect event stream from motion-event staleness and recovers it with a rate-limited, capped `initialize()` on the Protect controller. v3.0.0 was written in this repo from an audit of v2 and is not on the hub yet: after installing it, add its code id to `sync_config.json` so the hub becomes the source of truth again.
 
 ## Drivers
 

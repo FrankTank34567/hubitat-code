@@ -10,5 +10,6 @@
 | apps/Home Smoke and CO Response.groovy | app | homeEmergency | 1.6.0 | 1022 | 2026-11-09 |
 | apps/Local Irrigation Manager V3.groovy | app | FrankTank34567 | 3.4.0-dev-waterbalance | 1025 | 2026-11-09 |
 | apps/Modem Power Cycle Watchdog.groovy | app | franktank |  | 1037 | 2026-11-09 |
+| apps/UniFi Protect Event Watchdog.groovy | app | watchdog | 3.0.0 | not on hub yet | 2026-11-15 (audited rewrite, added from repo) |
 | drivers/Frame Notifier.groovy | driver | epaperframe |  | 2208 | 2026-11-09 |
 | drivers/Valetudo Robot Vacuum.groovy | driver | valetudo-hubitat |  | 2157 | 2026-11-14 |
