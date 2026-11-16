@@ -1,0 +1,642 @@
+--- valetudo_driver_3.11.0_original.groovy	2026-10-31 14:06:41
++++ valetudo_driver.groovy	2026-10-31 15:29:52
+@@ -8,7 +8,7 @@
+  * All automation logic (presence, security, lighting, scheduling) is built in
+  * Rule Machine using the attributes and commands this driver exposes. No app needed.
+  *
+- * Tested against: Dreame X40 Master / Valetudo 2024.x+
++ * Tested against: Dreame X40 Master + X40 Ultra / Valetudo 2026.10.0 (firmware 1782)
+  * Compatible with: Any Valetudo-supported robot (Dreame, Roborock, Viomi, Midea).
+  *   Capabilities vary by model — unsupported commands are simply ignored by the robot.
+  *
+@@ -34,11 +34,17 @@
+  * ── ATTRIBUTE REFERENCE (for Rule Machine triggers/conditions) ────────────────
+  *   switch                "on" cleaning | "off" docked/idle/paused
+  *   battery               0-100 (%)
+- *   batteryStatus         charging | discharging | full
+- *   robotStatus           idle|cleaning|returning|docking|paused|error|manual_control|moving
+- *   robotStatusFlag       none|segment|zone|spot|target|resuming|mapping
+- *   robotError            last error text ("" when none)
+- *   dockStatus            idle|pause|cleaning|emptying|drying|... (model dependent)
++ *   batteryStatus         none | charging | discharging | charged
++ *   robotStatus           idle|cleaning|returning|docked|paused|error|manual_control|moving
++ *   robotStatusFlag       none|segment|zone|spot|target|resumable|mapping
++ *                         (since Valetudo 2026.08.0 "resumable" can also appear while
++ *                         returning, paused or idle, not only docked)
++ *   robotError            highest-severity active fault text ("none" when clear)
++ *   robotErrorDetail      Valetudo's structured error: "level/kind/subsystem: message"
++ *                         ("none" when clear). Display only — does NOT feed the alert engine.
++ *   activeAlerts / pushAlerts / alertCount / alertSeverity — see v3.7.0 notes below
++ *   robotAvailability     online|offline — the robot's own MQTT presence ($state)
++ *   dockStatus            idle|pause|cleaning|emptying|drying|error (model dependent)
+  *   operationMode         mop|vacuum|vacuum_and_mop|vacuum_then_mop (if supported)
+  *   fanSpeed              current fan preset
+  *   waterLevel            current water preset
+@@ -47,6 +53,7 @@
+  *   attachment_watertank  attached|detached
+  *   keyLock               ON|OFF
+  *   carpetMode            ON|OFF
++ *   carpetSensorMode      off|avoid|lift|detach (model dependent; via MQTT or refreshSettings)
+  *   obstacleAvoidance     ON|OFF
+  *   petObstacleAvoidance  ON|OFF
+  *   speakerVolume         0-100
+@@ -55,12 +62,15 @@
+  *   wifiSSID / wifiSignal / wifiFrequency
+  *   currentArea (cm2) / currentTime (s)
+  *   totalArea (cm2) / totalTime (s) / totalCount (#)
+- *   dock_dustbag / dock_freshwater / dock_wastewater / dock_detergent (% if supported)
+- *   consumables           JSON {name: value, ...} — brush/filter/mop life
++ *   dock_dustbag / dock_freshwater / dock_wastewater / dock_detergent
++ *                         ok|missing|empty|full|unknown (enum, NOT a percentage)
++ *   consumables           JSON {name: value, ...} — remaining life. Keys look like
++ *                         brush-main, brush-side_right, filter-main, cleaning-sensor;
++ *                         values are seconds (or percent on some robots)
+  *   quirks                JSON {title: value, ...} — current quirk values (via refreshQuirks).
+  *                         The titles here are exactly what setQuirkByTitle expects.
+  *   dnd                   on|off — Do Not Disturb enabled (via setDoNotDisturb / refreshSettings)
+- *   dndWindow             "HH:MM-HH:MM" — DND window ("" when off)
++ *   dndWindow             "HH:MM-HH:MM" — DND window ("none" when off)
+  *   cleanRoute            current clean route/intensity (via setCleanRoute / refreshSettings)
+  *   autoEmptyInterval     current auto-empty dock interval (via setAutoEmptyInterval / refreshSettings)
+  *   mopAutoDrying         on|off — auto-dry mops after cleanup (via setMopAutoDrying / refreshSettings)
+@@ -78,8 +88,10 @@
+  *   Dock:          triggerAutoEmpty   (empty dustbin into dock bag)
+  *   Toggles:       setKeyLock(on/off) / setCarpetMode(on/off)
+  *                  setObstacleAvoidance(on/off) / setPetObstacleAvoidance(on/off)
++ *                  setCarpetSensorMode(off/avoid/lift/detach)
+  *   Sound:         setSpeakerVolume(0-100)
+- *   Consumables:   resetConsumable(name)
++ *   Consumables:   resetConsumable(name)   name = a key from the consumables attribute
++ *   Events:        dismissEvent(id)   acknowledge a Valetudo event (e.g. a stuck error)
+  *   Quirks:        setQuirkByTitle(title, value)  <-- preferred, no UUIDs, any robot
+  *                  setQuirk(quirkId, value)      <-- advanced escape hatch
+  *                  setFanSpeedTurbo(on/off) / refreshQuirks (all REST)
+@@ -89,8 +101,8 @@
+  *   Maintenance:   refresh (REST state pull) / refreshSegments (REST) / refreshSettings (REST) / reconnect (MQTT)
+  *
+  * Author:  Hubitat Community contribution
+- * Version: 3.11.0
+- * Date:    2026-07-25
++ * Version: 3.12.0
++ * Date:    2026-10-31
+  *
+  * Copyright 2025 Contributors. Licensed under the Apache License, Version 2.0.
+  * You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
+@@ -257,6 +269,69 @@
+  *
+  *   robotError is RETAINED for backward compatibility with existing rules, but is
+  *   now single-writer and change-guarded. Prefer activeAlerts for new rules.
++ *
++ * v3.12.0 — VALETUDO 2026.10.0 COMPATIBILITY
++ *
++ *   Verified against Valetudo 2026.10.0 on a Dreame X40 Master and X40 Ultra:
++ *   every topic and REST endpoint this driver used still exists with the same
++ *   payloads (live capture + both robots' Swagger). No command, attribute or
++ *   preference was renamed or removed.
++ *
++ *   ALERT CLASSIFICATION (the part that changes notifications):
++ *     - Valetudo 2026.10.0 (commit 359a212) maps Dreame code 93 to "Cannot reach
++ *       target". Before, it arrived as "Unknown error 93", matched nothing, and
++ *       stayed silent. It matched the fault pattern ("cannot reach"), so it would
++ *       have pushed AND set alertSeverity=fault, blocking scheduled runs. It is now
++ *       classified "supply": it still pushes, but does not read as a fault.
++ *       Valetudo itself rates it TRANSIENT/WARNING.
++ *     - Pre-existing gap fixed: hardware failures Valetudo rates CATASTROPHIC
++ *       ("Gyroscope sensor error", "Fan speed abnormal", "Camera fault",
++ *       "ToF Sensor offline", "RTC fault", "3.3V rail abnormal", ...) matched no
++ *       pattern and fell to "info", so they never pushed. They are now "fault".
++ *       Side effect: "Water pump fault" moves from supply to fault.
++ *
++ *   FIXES:
++ *     - resetConsumable REST fallback (known issue since 3.3.1) now uses the
++ *       documented PUT .../ConsumableMonitoringCapability/<type>/<sub_type> with
++ *       {"action":"reset"}. The key is split on its first "-" (brush-main ->
++ *       brush/main). Names are validated against [A-Za-z0-9_-] for BOTH the MQTT
++ *       topic and the REST path; anything else is rejected with a warning. That
++ *       allowlist makes URL-encoding a no-op, so no encoder import is needed.
++ *     - refresh() (REST) now maps DockComponentStateAttribute (dock_*) and
++ *       DockStatusStateAttribute (dockStatus). Before, a REST-only refresh never
++ *       updated them.
++ *     - robotAvailability is now known at connect. Valetudo publishes $state as
++ *       retained, but on this broker it was not replayed to new subscribers
++ *       (observed live on both robots; cause unverified). If no $state arrives
++ *       within AVAILABILITY_PROBE_SEC of subscribing, ONE quiet REST read of
++ *       /api/v2/mqtt/status sets it. A failed probe changes nothing and logs at
++ *       debug only, so a powered-off robot cannot raise a false "offline".
++ *     - setDoNotDisturb(off) wrote dndWindow="" — the empty-string bug fixed for
++ *       alerts in 3.9.1 (Hubitat drops it, the attribute stays stale). Now "none".
++ *     - mopDockClean body {"action":"start"|"stop"} is now confirmed by Swagger.
++ *     - Corrected value hints: batteryStatus uses "charged" (not "full"),
++ *       robotStatusFlag uses "resumable" (not "resuming"), dock_* are enums (not
++ *       percentages), clean routes are normal|quick|intensive|deep, auto-empty
++ *       intervals are off|infrequent|normal|frequent, consumable keys look like
++ *       brush-main.
++ *
++ *   NEW (additive):
++ *     - carpetSensorMode attribute + setCarpetSensorMode(mode). MQTT, REST fallback,
++ *       also read by refreshSettings.
++ *     - robotErrorDetail attribute from StatusStateAttribute/error (Valetudo's
++ *       structured severity/subsystem). Display only — the alert engine is untouched.
++ *     - dismissEvent(id): acknowledge a Valetudo event (documented interact topic;
++ *       REST fallback PUT /api/v2/events/<id>/interact). The id is validated.
++ *     - targetedSubscriptions preference (default OFF = unchanged behaviour). When
++ *       ON, the driver subscribes to the specific topics it handles instead of "#".
++ *       Since 2026.10.0 Valetudo always publishes raw map data (commit 5772c9c,
++ *       ~12 KB + ~36 KB per map update) and Home Assistant state topics under the
++ *       robot's base topic (commit 31bbc50). With "#" the hub receives all of it
++ *       only to discard it. If a targeted subscribe fails part-way, the session is
++ *       dropped and rebuilt, so a retry can never double-subscribe.
++ *
++ *   NOT CHANGED: alert debounce, confirmation window, battery grace logic, REST
++ *     circuit breaker, offline handling, quirk discovery, RM parameter hints.
+  *
+  * v3.11.0 — TRANSIENT FAULT CONFIRMATION WINDOW
+  *
+@@ -399,7 +474,7 @@
+ import groovy.json.JsonOutput
+ import groovy.transform.Field
+ 
+-@Field static final String DRIVER_VERSION = "3.11.0"
++@Field static final String DRIVER_VERSION = "3.12.0"
+ 
+ // REST circuit breaker tuning. See restPut() / restFailed() / restSucceeded().
+ @Field static final int REST_FAIL_THRESHOLD      = 3     // consecutive failures before the breaker opens
+@@ -460,7 +535,18 @@
+ }
+ 
+ @Field static final List ALERT_RULES = [
++    // v3.12.0: must precede the fault rule, which also matches "cannot reach".
++    // Valetudo 2026.10.0 maps Dreame code 93 to this text (it was a silent "Unknown
++    // error 93" before). Valetudo rates it TRANSIENT/WARNING: still worth a push, but
++    // it must not read as a fault that blocks scheduled runs.
++    [sev: "supply", pat: "(cannot reach target)"],
+     [sev: "fault",  pat: "(jam|stuck|trapped|tangl|blocked|cliff|drop|lost mop pad|cannot reach|failed to (return|reach)|wheel|bumper|collision|overheat|motor|internal error|no route|no path)"],
++    // v3.12.0: hardware failures Valetudo rates CATASTROPHIC ("Gyroscope sensor error",
++    // "Fan speed abnormal", "Camera fault", "ToF Sensor offline", "3.3V rail abnormal")
++    // matched nothing above and fell through to "info", so they never pushed. Placed
++    // after the fault rule and before supply on purpose. "Camera dirty" / "Sensor dirty"
++    // are maintenance, not failures, and still fall through to info.
++    [sev: "fault",  pat: "(sensor error|abnormal|\\bfault\\b|sensor offline)"],
+     [sev: "supply", pat: "(tank|dustbag|dust bag|dust bin|dustbin|bin full|detergent|water|waste|empty|full)"],
+     [sev: "mop",    pat: "(mop)"],
+     [sev: "info",   pat: "(batter|charg|consumable|filter|brush life)"]
+@@ -483,6 +569,56 @@
+ @Field static final List RECOVERING_STATUSES =
+     ["cleaning", "returning", "docking", "docked", "moving", "charging"]
+ 
++// Seconds to wait after subscribing for a retained $state before asking the robot
++// directly (see availabilityProbe()). Retained messages normally arrive within 1-2s.
++@Field static final int AVAILABILITY_PROBE_SEC = 15
++
++// Allowlists for caller-supplied values that end up in an MQTT topic or a REST path.
++// Rule Machine can pass anything; a "/", "+", "#" or ".." must never reach a topic or URL.
++@Field static final String CONSUMABLE_KEY_PAT = /^[A-Za-z0-9_-]{1,64}$/
++@Field static final String EVENT_ID_PAT       = /^[A-Za-z0-9_-]{1,64}$/
++@Field static final List   CARPET_SENSOR_MODES = ["off", "avoid", "lift", "detach"]
++
++// Valetudo dock component type -> driver attribute. Shared by the REST refresh; the
++// MQTT parser keeps its explicit cases.
++@Field static final Map DOCK_COMPONENT_ATTRS = [
++    "dustbag":          "dock_dustbag",
++    "water_tank_clean": "dock_freshwater",
++    "water_tank_dirty": "dock_wastewater",
++    "detergent":        "dock_detergent"
++]
++
++// Topic filters used when the targetedSubscriptions preference is ON. Exactly the
++// topics parse() handles (plus their siblings via "+"), and nothing else — so the
++// always-on raw map blobs and Home Assistant state topics never reach the hub.
++// "+" matches one level only, so nested Homie descriptors like ".../status/$format"
++// are excluded; the few one-level "$name"-style siblings it does match are ignored
++// by parse() exactly as they are with "#".
++@Field static final List TARGETED_TOPICS = [
++    "\$state",
++    "StatusStateAttribute/+",
++    "BatteryStateAttribute/+",
++    "DockStatusStateAttribute/+",
++    "DockComponentStateAttribute/+",
++    "AttachmentStateAttribute/+",
++    "FanSpeedControlCapability/preset",
++    "WaterUsageControlCapability/preset",
++    "OperationModeControlCapability/preset",
++    "KeyLockCapability/enabled",
++    "CarpetModeControlCapability/enabled",
++    "CarpetSensorModeControlCapability/mode",
++    "ObstacleAvoidanceControlCapability/enabled",
++    "PetObstacleAvoidanceControlCapability/enabled",
++    "SpeakerVolumeControlCapability/value",
++    "MapData/segments",
++    "MapSegmentationCapability/clean",
++    "WifiConfigurationCapability/+",
++    "CurrentStatisticsCapability/+",
++    "TotalStatisticsCapability/+",
++    "ConsumableMonitoringCapability/+",
++    "ValetudoEvents/valetudo_events"
++]
++
+ metadata {
+     definition(
+         name:      "Valetudo Robot Vacuum",
+@@ -547,14 +683,23 @@
+         command "setCarpetMode",           [[name: "state*", type: "ENUM", description: "RM type: string. on or off. Reflected in the carpetMode attribute", constraints: ["on","off"]]]
+         command "setObstacleAvoidance",    [[name: "state*", type: "ENUM", description: "RM type: string. on or off. Reflected in the obstacleAvoidance attribute", constraints: ["on","off"]]]
+         command "setPetObstacleAvoidance", [[name: "state*", type: "ENUM", description: "RM type: string. on or off. Reflected in the petObstacleAvoidance attribute", constraints: ["on","off"]]]
++        // What the robot does when it detects carpet (model dependent; X40: off, avoid, lift, detach).
++        command "setCarpetSensorMode",     [[name: "mode*", type: "ENUM", description: "RM type: string. One of: off, avoid, lift, detach (model dependent). Reflected in the carpetSensorMode attribute", constraints: ["off","avoid","lift","detach"]]]
+ 
+         // Sound
+         command "setSpeakerVolume", [[name: "volume*", type: "NUMBER", description: "RM type: number. 0-100 (values outside are clamped). Reflected in the speakerVolume attribute"]]
+ 
+         // Consumables
+         command "resetConsumable", [[name: "name*", type: "STRING",
+-            description: "RM type: string. Consumable key from the consumables attribute (e.g. main_brush, side_brush, filter). Reflected in the consumables attribute"]]
++            description: "RM type: string. Consumable key exactly as shown in the consumables attribute (e.g. brush-main, brush-side_right, filter-main, cleaning-sensor). Reflected in the consumables attribute"]]
+ 
++        // Events
++        // Acknowledge (dismiss) a Valetudo event, e.g. an error that stays listed after
++        // you fixed the cause. Event ids appear in the robot's web UI and in the
++        // ValetudoEvents MQTT topic. Clearing it removes it from activeAlerts.
++        command "dismissEvent", [[name: "eventId*", type: "STRING",
++            description: "RM type: string. The Valetudo event id (letters, digits, - and _ only), e.g. mop_attachment_reminder or a UUID. Reflected in activeAlerts once Valetudo drops it"]]
++
+         // Quirks (vendor-specific tunables — REST only, no MQTT handle exists in Valetudo)
+         // Generic engine: set ANY quirk by its UUID. Get UUIDs + valid values from
+         //   GET http://<robotIp>/api/v2/robot/capabilities/QuirksCapability
+@@ -588,7 +733,7 @@
+         command "mopDockDry", [[name: "action*", type: "ENUM",
+             description: "RM type: string. start or stop. Starts/stops drying the mop pads in the dock",
+             constraints: ["start","stop"]]]
+-        // Mop dock: wash the mop pads. Momentary trigger. See NOTE in code: body unconfirmed.
++        // Mop dock: wash the mop pads. Momentary trigger. Body confirmed against Swagger in 3.12.0.
+         command "mopDockClean", [[name: "action*", type: "ENUM",
+             description: "RM type: string. start or stop. Starts/stops washing the mop pads in the dock",
+             constraints: ["start","stop"]]]
+@@ -601,11 +746,11 @@
+         // Clean route / intensity. Valid values vary by robot — see the cleanRoute attribute
+         // or GET .../CleanRouteControlCapability/properties (supportedRoutes) for yours.
+         command "setCleanRoute", [[name: "route*", type: "STRING",
+-            description: "RM type: string. One of your robot's supported routes (commonly quick, standard, deep, or intensive). Reflected in the cleanRoute attribute"]]
++            description: "RM type: string. One of your robot's supported routes (X40: normal, quick, intensive, deep). Reflected in the cleanRoute attribute"]]
+         // Auto-empty dock interval. Valid values vary — see the autoEmptyInterval attribute
+         // or GET .../AutoEmptyDockAutoEmptyIntervalControlCapability/properties.
+         command "setAutoEmptyInterval", [[name: "interval*", type: "STRING",
+-            description: "RM type: string. One of your robot's supported intervals (commonly off, after_every_cleanup, after_every_second_cleanup). Reflected in the autoEmptyInterval attribute"]]
++            description: "RM type: string. One of your robot's supported intervals (X40: off, infrequent, normal, frequent). Reflected in the autoEmptyInterval attribute"]]
+         // Mop dock: automatically dry mops after each cleanup.
+         command "setMopAutoDrying", [[name: "state*", type: "ENUM",
+             description: "RM type: string. on or off. Reflected in the mopAutoDrying attribute",
+@@ -627,7 +772,8 @@
+         // It now holds only the single highest-severity active fault, and is
+         // written at most once per flush. Prefer activeAlerts for new rules.
+         attribute "robotError",           "string"
+-        attribute "activeAlerts",         "string"   // all active faults, "; " joined ("" = clear)
++        attribute "robotErrorDetail",     "string"   // Valetudo structured error "level/kind/subsystem: message" ("none" = clear). Display only
++        attribute "activeAlerts",         "string"   // all active faults, "; " joined ("none" = clear)
+         attribute "pushAlerts",           "string"   // push-worthy subset of activeAlerts
+         attribute "alertCount",           "number"   // count of distinct active faults
+         attribute "alertSeverity",        "string"   // fault | supply | mop | info | none
+@@ -641,6 +787,7 @@
+         attribute "attachment_watertank", "string"
+         attribute "keyLock",              "string"
+         attribute "carpetMode",           "string"
++        attribute "carpetSensorMode",     "string"   // off|avoid|lift|detach
+         attribute "obstacleAvoidance",    "string"
+         attribute "petObstacleAvoidance", "string"
+         attribute "speakerVolume",        "number"
+@@ -711,6 +858,10 @@
+               title: "<b>Auto-reconnect MQTT on disconnect</b>", defaultValue: true
+         input name: "reconnectDelay", type: "number",
+               title: "<b>Reconnect delay (seconds)</b>", defaultValue: 30, range: "5..300"
++        input name: "targetedSubscriptions", type: "bool",
++              title: "<b>Targeted MQTT subscriptions (reduce hub traffic)</b>",
++              description: "Subscribe only to the topics this driver uses instead of everything under the robot. Keeps Valetudo's raw map data (~50 KB per map update while cleaning) and Home Assistant topics off the hub. Off = previous behaviour. Saving reconnects MQTT.",
++              defaultValue: false
+ 
+         input name: "batteryStrandedGraceMin", type: "number",
+               title: "<b>Low-battery grace period (minutes)</b>",
+@@ -800,6 +951,7 @@
+     // would keep firing (and keep trying to reconnect) after the device is gone.
+     unschedule("mqttHealthCheck")
+     unschedule("mqttConnect")
++    unschedule("availabilityProbe")
+     try { interfaces.mqtt.disconnect() } catch (e) { }
+ }
+ 
+@@ -922,21 +1074,73 @@
+         return
+     }
+ 
++    boolean targeted = (settings.targetedSubscriptions == true)
+     try {
+-        // Single wildcard subscription — simpler and future-proof.
+-        // Valetudo only publishes topics for capabilities the robot actually has.
+-        interfaces.mqtt.subscribe("${base}/#", 1)
++        if (targeted) {
++            // One filter per handled topic. If any subscribe throws part-way, the
++            // session already holds the earlier ones; a retry on the SAME session would
++            // subscribe them twice (Hubitat does not de-duplicate — the v3.7.0 storm).
++            // So a failure here drops the session (cleanSession defaults to true) and
++            // the reconnect starts from zero subscriptions. See the catch below.
++            TARGETED_TOPICS.each { t -> interfaces.mqtt.subscribe("${base}/${t}", 1) }
++            logInfo "Subscribed to ${TARGETED_TOPICS.size()} targeted topics under ${base}/"
++        } else {
++            // Single wildcard subscription — simpler and future-proof.
++            // Valetudo only publishes topics for capabilities the robot actually has.
++            interfaces.mqtt.subscribe("${base}/#", 1)
++            logInfo "Subscribed to ${base}/#"
++        }
+         state.mqttSubscribed = true
+         state.mqttConnecting = false
+-        logInfo "Subscribed to ${base}/#"
+         setMqttStatus("connected")
++        // Robot availability: a retained $state should arrive within a second or two.
++        // If it has not by AVAILABILITY_PROBE_SEC, availabilityProbe() asks the robot.
++        state.homieStateSeen = false
++        if (robotIp?.trim()) runIn(AVAILABILITY_PROBE_SEC, "availabilityProbe")
+         // Pull a fresh REST snapshot on (re)connect if REST is configured
+         if (robotIp?.trim()) { runIn(3, "refresh"); runIn(5, "refreshSegments"); runIn(7, "refreshQuirks"); runIn(9, "refreshSettings") }
+     } catch (e) {
+         state.mqttConnecting = false
+         log.error "${device.displayName}: Subscribe failed — ${e.message}"
++        if (targeted) {
++            // Drop the half-subscribed session so the retry cannot double-subscribe.
++            state.mqttSubscribed = false
++            try { interfaces.mqtt.disconnect() } catch (ignored) { }
++        }
+         setMqttStatus("error")
+         scheduleReconnect()
++    }
++}
++
++// Sets robotAvailability when no retained $state arrived after subscribing.
++//
++// Valetudo publishes $state retained (with a retained "lost" Last Will), so a new
++// subscriber normally learns the robot's presence immediately. On the Hubitat
++// built-in broker that replay was observed NOT to happen (both robots, 2026-10-31;
++// cause unverified), leaving robotAvailability unset until the robot next changed
++// state. GET /api/v2/mqtt/status reports the same Homie state Valetudo publishes.
++//
++// Deliberately quiet: it bypasses restFailed() so it can never open the breaker or
++// log warnings, and a FAILED probe changes nothing — a network blip must not raise
++// a false "offline" (which could fire a Rule Machine notification). Only an answer
++// from the robot itself sets the attribute.
++def availabilityProbe() {
++    if (state.homieStateSeen) return
++    if (restBlocked("GET mqtt/status", false)) return
++    def host = restHost()
++    if (!host) return
++    def url = "http://${host}/api/v2/mqtt/status"
++    String robotState = null
++    try {
++        httpGet([uri: url, timeout: 10]) { resp -> robotState = resp?.data?.state as String }
++    } catch (e) {
++        logDebug "availabilityProbe: no answer (${e.message}); robotAvailability left unchanged"
++        return
++    }
++    if (state.homieStateSeen) return   // a live $state won the race; it is authoritative
++    if (robotState) {
++        logDebug "availabilityProbe: robot MQTT state = ${robotState}"
++        handleHomieState(robotState)
+     }
+ }
+ 
+@@ -1001,7 +1205,7 @@
+         isStateChange: false)
+ 
+     // Ignore Homie metadata topics ($state handled below, others skipped)
+-    if (sub == "\$state") { handleHomieState(payload); return }
++    if (sub == "\$state") { state.homieStateSeen = true; handleHomieState(payload); return }
+     if (sub.startsWith("\$")) return
+     // Ignore command response echoes (".../set" never published back, but be safe)
+     if (sub.endsWith("/set")) return
+@@ -1018,6 +1222,10 @@
+             // which is a NON-EMPTY payload and would otherwise register as a fault.
+             setAlertSlice("status", isNonAlertText(payload) ? [:] : [(payload): payload])
+             break
++        case sub == "StatusStateAttribute/error":
++            // Structured twin of error_description. Display only: it deliberately does
++            // NOT feed an alert slice, so the alert engine's behaviour is unchanged.
++            handleRobotErrorDetail(payload); break
+         case sub == "BatteryStateAttribute/level":
+             sendIntEvent("battery", payload, "%"); break
+         case sub == "BatteryStateAttribute/status":
+@@ -1040,6 +1248,8 @@
+             sendEvent(name: "keyLock", value: payload, isStateChange: true); break
+         case sub == "CarpetModeControlCapability/enabled":
+             sendEvent(name: "carpetMode", value: payload, isStateChange: true); break
++        case sub == "CarpetSensorModeControlCapability/mode":
++            if (payload) sendEvent(name: "carpetSensorMode", value: payload, isStateChange: true); break
+         case sub == "ObstacleAvoidanceControlCapability/enabled":
+             sendEvent(name: "obstacleAvoidance", value: payload, isStateChange: true); break
+         case sub == "PetObstacleAvoidanceControlCapability/enabled":
+@@ -1116,6 +1326,34 @@
+     sendEvent(name: "robotAvailability", value: value, isStateChange: true)
+ }
+ 
++// StatusStateAttribute/error carries Valetudo's own classification of the current
++// error, e.g. {"severity":{"kind":"transient","level":"warning"},"subsystem":
++// "navigation","message":"Cannot reach target"}. Healthy = kind "none", empty message.
++// Rendered to one non-empty string (Hubitat drops "", see 3.9.1) and change-guarded
++// in state, because the topic is retained and republished on every reconnect.
++private void handleRobotErrorDetail(String payload) {
++    String detail = ALERT_CLEAR
++    try {
++        def e = payload ? new JsonSlurper().parseText(payload) : null
++        if (e instanceof Map) {
++            String kind  = (e.severity?.kind  ?: "none") as String
++            String level = (e.severity?.level ?: "none") as String
++            String sys   = (e.subsystem ?: "none") as String
++            String msg   = (e.message ?: "").toString().trim()
++            if (!(kind == "none" && level == "none" && !msg)) {
++                detail = "${level}/${kind}/${sys}" + (msg ? ": ${msg}" : "")
++            }
++        }
++    } catch (ex) {
++        logDebug "Cannot parse StatusStateAttribute/error: ${payload}"
++        return
++    }
++    if (detail.length() > 250) detail = detail.substring(0, 250)
++    if (state.lastRobotErrorDetail == detail) return
++    state.lastRobotErrorDetail = detail
++    sendEvent(name: "robotErrorDetail", value: detail, isStateChange: true)
++}
++
+ private void handleRobotStatus(String payload) {
+     sendEvent(name: "robotStatus", value: payload ?: "unknown", isStateChange: true)
+     def sw = (payload in ["cleaning","manual_control","moving"]) ? "on" : "off"
+@@ -1517,8 +1755,44 @@
+     if (mqttUp()) pub("${cap}/enabled/set", on ? "ON" : "OFF")
+     else restPut(cap, [action: on ? "enable" : "disable"])
+     logInfo "${cap} → ${on ? 'ON' : 'OFF'}"
++}
++
++// Carpet sensor mode. MQTT: CarpetSensorModeControlCapability/mode/set with a bare enum
++// (mqtt docs). REST: PUT CarpetSensorModeControlCapability {"mode":"<mode>"} (Swagger).
++// Validated against the allowlist because the value reaches a payload either way.
++def setCarpetSensorMode(String mode) {
++    def m = mode?.trim()?.toLowerCase()
++    if (!(m in CARPET_SENSOR_MODES)) {
++        log.warn "${device.displayName}: setCarpetSensorMode: use one of ${CARPET_SENSOR_MODES.join(', ')} (got '${mode}')"
++        return
++    }
++    if (mqttUp()) pub("CarpetSensorModeControlCapability/mode/set", m)
++    else restPut("CarpetSensorModeControlCapability", [mode: m])
++    logInfo "Carpet sensor mode → ${m}"
+ }
+ 
++// Acknowledge a Valetudo event. MQTT: ValetudoEvents/valetudo_events/interact/set with
++// {"id":"<id>","interaction":"ok"} (mqtt docs). REST: PUT /api/v2/events/<id>/interact
++// {"interaction":"ok"} (Swagger). "ok" is the documented interaction for dismissible
++// events such as ErrorStateValetudoEvent. The id reaches a URL path, so it is
++// allowlisted first. Once Valetudo drops the event, the retained valetudo_events topic
++// is republished without it and the alert engine clears it as usual.
++def dismissEvent(String eventId) {
++    def id = eventId?.trim()
++    if (!id || !(id ==~ EVENT_ID_PAT)) {
++        log.warn "${device.displayName}: dismissEvent: '${eventId}' is not a valid event id (letters, digits, - and _ only)"
++        return
++    }
++    if (mqttUp()) {
++        pub("ValetudoEvents/valetudo_events/interact/set", JsonOutput.toJson([id: id, interaction: "ok"]))
++    } else {
++        def host = restHost()
++        if (host) restPutUrl("http://${host}/api/v2/events/${id}/interact", [interaction: "ok"], "PUT events/interact")
++        else if (settings.restFallback != false) log.warn "${device.displayName}: REST command needs Robot IP set — command not sent"
++    }
++    logInfo "Dismiss event → ${id}"
++}
++
+ def setSpeakerVolume(volume) {
+     def v = Math.max(0, Math.min(100, toIntOr(volume, 0)))
+     if (mqttUp()) pub("SpeakerVolumeControlCapability/value/set", v.toString())
+@@ -1527,10 +1801,28 @@
+ }
+ 
+ def resetConsumable(String name) {
+-    if (!name?.trim()) { log.warn "${device.displayName}: resetConsumable: no name"; return }
+-    if (mqttUp()) pub("ConsumableMonitoringCapability/${name}/reset/set", "PERFORM")
+-    else restPut("ConsumableMonitoringCapability", [action: "reset", type: name])
+-    logInfo "Reset consumable → ${name}"
++    def key = name?.trim()
++    if (!key) { log.warn "${device.displayName}: resetConsumable: no name"; return }
++    // The key goes into an MQTT topic or a REST path, so it must be a plain token.
++    // Real keys look like brush-main, brush-side_right, filter-main, cleaning-sensor.
++    if (!(key ==~ CONSUMABLE_KEY_PAT)) {
++        log.warn "${device.displayName}: resetConsumable: '${key}' is not a valid consumable key (use one from the consumables attribute)"
++        return
++    }
++    if (mqttUp()) {
++        pub("ConsumableMonitoringCapability/${key}/reset/set", "PERFORM")
++    } else {
++        // Swagger: PUT .../ConsumableMonitoringCapability/<type>[/<sub_type>] {"action":"reset"}.
++        // MQTT key = "<type>-<sub_type>" (sub_type may itself contain "_" but never "-"),
++        // so split on the FIRST "-". Both parts passed the allowlist above, which makes
++        // URL-encoding them a no-op.
++        int dash = key.indexOf("-")
++        String path = (dash > 0 && dash < key.length() - 1) ?
++            "ConsumableMonitoringCapability/${key.substring(0, dash)}/${key.substring(dash + 1)}" :
++            "ConsumableMonitoringCapability/${key}"
++        restPut(path, [action: "reset"])
++    }
++    logInfo "Reset consumable → ${key}"
+ }
+ 
+ // ═══════════════════════════════════════════════════════════════════════════════
+@@ -1558,6 +1850,13 @@
+ // ═══════════════════════════════════════════════════════════════════════════════
+ 
+ private String restBase() {
++    def host = restHost()
++    return host ? "http://${host}/api/v2/robot" : null
++}
++
++// Just host[:port] from the robotIp preference. Shared by restBase() and the few
++// endpoints that live outside /api/v2/robot (mqtt/status, events).
++private String restHost() {
+     def ip = robotIp?.trim()
+     if (!ip) return null
+     // Defensive: strip any accidental scheme, path, or trailing slash the user may have
+@@ -1567,7 +1866,7 @@
+     int slash = ip.indexOf("/")
+     if (slash >= 0) ip = ip.substring(0, slash)
+     ip = ip.trim()
+-    return "http://${ip}/api/v2/robot"
++    return ip ?: null
+ }
+ 
+ // Manual / on-(re)connect refresh of all state attributes via REST
+@@ -1618,6 +1917,16 @@
+             if (attr.type == "mop")       sendEvent(name: "attachment_mop",       value: attr.attached ? "attached" : "detached", isStateChange: true)
+             else if (attr.type == "dustbin")   sendEvent(name: "attachment_dustbin",   value: attr.attached ? "attached" : "detached", isStateChange: true)
+             else if (attr.type == "watertank") sendEvent(name: "attachment_watertank", value: attr.attached ? "attached" : "detached", isStateChange: true)
++            break
++        case "DockStatusStateAttribute":
++            // REST shape: {"__class":"DockStatusStateAttribute","value":"idle"} (live, 2026.10.0)
++            if (attr.value) sendEvent(name: "dockStatus", value: attr.value as String, isStateChange: true)
++            break
++        case "DockComponentStateAttribute":
++            // REST shape: {"__class":"DockComponentStateAttribute","type":"dustbag","value":"ok"}
++            // Same names and values as the MQTT DockComponentStateAttribute/<type> topics.
++            def dockAttr = DOCK_COMPONENT_ATTRS[attr.type as String]
++            if (dockAttr && attr.value) sendEvent(name: dockAttr, value: attr.value as String, isStateChange: true)
+             break
+         default:
+             logDebug "REST attribute not mapped: ${attr.__class}"
+@@ -1875,11 +2184,9 @@
+     logInfo "Mop dock dry → ${a}"
+ }
+ 
+-// Mop dock: wash mop pads.
+-// NOTE: your Swagger export showed this endpoint WITHOUT a request-body example (the Dry
+-// endpoint showed {"action":"start"}). This sends the same start/stop shape by analogy,
+-// isolated to mopDockCleanBody() below. If it 400s, expand the PUT row in Swagger, read
+-// the real body, and adjust that one function. Everything else here is confirmed.
++// Mop dock: wash mop pads. Swagger: PUT MopDockCleanManualTriggerCapability {"action":"start"|"stop"}
++// (confirmed on both robots' Valetudo 2026.10.0 Swagger in 3.12.0; the body was inferred
++// by analogy with the Dry trigger before that). Still isolated in mopDockCleanBody().
+ def mopDockClean(String action) {
+     def a = action?.trim()?.toLowerCase()
+     if (!(a in ["start","stop"])) { log.warn "${device.displayName}: mopDockClean: use start or stop (got '${action}')"; return }
+@@ -1909,7 +2216,9 @@
+     restPut("DoNotDisturbCapability", body)
+     // Optimistic update
+     sendEvent(name: "dnd", value: on ? "on" : "off", isStateChange: true)
+-    sendEvent(name: "dndWindow", value: on ? sWin : "", isStateChange: true)
++    // ALERT_CLEAR, not "": Hubitat drops empty-string events (see 3.9.1), which left
++    // dndWindow stuck on the old window after turning DND off.
++    sendEvent(name: "dndWindow", value: on ? sWin : ALERT_CLEAR, isStateChange: true)
+     logInfo "Do Not Disturb → ${on ? "on ${sWin}" : "off"}"
+ }
+ 
+@@ -1980,6 +2289,11 @@
+         if (d?.enabled != null) sendEvent(name: "mopAutoDrying", value: (d.enabled ? "on" : "off"), isStateChange: true)
+     } || anyOk
+ 
++    // Carpet sensor mode (Swagger: GET returns {"mode":"lift"})
++    anyOk = settingsGet("CarpetSensorModeControlCapability") { d ->
++        if (d?.mode) sendEvent(name: "carpetSensorMode", value: d.mode as String, isStateChange: true)
++    } || anyOk
++
+     if (anyOk) {
+         restSucceeded(200)
+         logInfo "Refreshed settings from REST"
+@@ -2099,7 +2413,18 @@
+             log.warn "${device.displayName}: REST command needs Robot IP set — command not sent"
+         return
+     }
+-    def url = "${restBase()}/capabilities/${path}"
++    restPutSend("${restBase()}/capabilities/${path}", body)
++}
++
++// Same as restPut() for the few endpoints outside /api/v2/robot/capabilities
++// (e.g. /api/v2/events/<id>/interact). Same gate, same breaker, same accounting.
++private void restPutUrl(String url, Map body, String what) {
++    if (restBlocked(what, true)) return
++    restPutSend(url, body)
++}
++
++// The shared PUT body of restPut()/restPutUrl(). Unchanged from the pre-3.12.0 restPut().
++private void restPutSend(String url, Map body) {
+     logDebug "REST PUT ${url} ${body ? JsonOutput.toJson(body) : '(empty)'}"
+ 
+     boolean ok = false

@@ -1,0 +1,102 @@
+{
+  "author": "FrankTank34567",
+  "gitHubUrl": "https://github.com/FrankTank34567/hubitat-code",
+  "rawBase": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/",
+  "minimumHEVersion": "2.2.9",
+  "packages": [
+    {
+      "key": "curtain-scheduler",
+      "name": "Curtain Scheduler",
+      "category": "Convenience",
+      "description": "Schedules curtains/blinds per room on sunrise/sunset or fixed times, with presence/event triggers and a keep-closed mode.",
+      "version": "1.0.0",
+      "apps": [
+        {"file": "apps/Curtain Scheduler.groovy", "primary": true},
+        {"file": "apps/Curtain Scheduler Room.groovy"}
+      ]
+    },
+    {
+      "key": "frame-bridge",
+      "name": "Frame Bridge",
+      "category": "Integrations",
+      "description": "Publishes selected devices' attributes to the e-paper frame service.",
+      "version": "0.6.0",
+      "apps": [{"file": "apps/Frame Bridge.groovy", "primary": true}]
+    },
+    {
+      "key": "frame-notifier",
+      "name": "Frame Notifier",
+      "category": "Notifications",
+      "description": "Notification device that sends text to the e-paper frame.",
+      "version": "0.1.0",
+      "drivers": [{"file": "drivers/Frame Notifier.groovy"}]
+    },
+    {
+      "key": "hrv-air-quality",
+      "name": "HRV / Ventilation Fan & Air Quality Manager",
+      "category": "Control",
+      "description": "Automates ventilation fans and air purifiers from CO2, PM2.5, outdoor air quality, freeze protection and presence.",
+      "version": "3.15.1",
+      "apps": [{"file": "apps/HRV - Ventilation Fan & Air Quality Manager.groovy", "primary": true}]
+    },
+    {
+      "key": "home-smoke-co",
+      "name": "Home Smoke and CO Response",
+      "category": "Safety & Security",
+      "description": "Three-tier emergency response to smoke/CO alarms and PM2.5 spikes.",
+      "version": "1.6.0",
+      "apps": [{"file": "apps/Home Smoke and CO Response.groovy", "primary": true}]
+    },
+    {
+      "key": "local-irrigation-v3",
+      "name": "Local Irrigation Manager V3",
+      "category": "Control",
+      "description": "Local-first irrigation using FAO-56 Penman-Monteith ET, per-zone soil gating and valve monitoring.",
+      "version": "3.4.0",
+      "apps": [{"file": "apps/Local Irrigation Manager V3.groovy", "primary": true}]
+    },
+    {
+      "key": "modem-watchdog",
+      "name": "Modem Power Cycle Watchdog",
+      "category": "Utility",
+      "description": "Restarts the modem via a smart plug when the internet is down and the modem is at fault, with restart-loop guards.",
+      "version": "2.2.1",
+      "apps": [{"file": "apps/Modem Power Cycle Watchdog.groovy", "primary": true}]
+    },
+    {
+      "key": "unifi-protect-watchdog",
+      "name": "UniFi Protect Event Watchdog",
+      "category": "Utility",
+      "description": "Detects a silently dead UniFi Protect event stream and recovers it with a rate-limited initialize().",
+      "version": "3.0.0",
+      "apps": [{"file": "apps/UniFi Protect Event Watchdog.groovy", "primary": true}]
+    },
+    {
+      "key": "valetudo",
+      "name": "Valetudo Robot Vacuum",
+      "category": "Integrations",
+      "description": "MQTT + REST driver for Valetudo robot vacuums.",
+      "version": "3.13.0",
+      "drivers": [{"file": "drivers/Valetudo Robot Vacuum.groovy"}]
+    },
+    {
+      "key": "starling",
+      "name": "Starling Connect",
+      "category": "Integrations",
+      "description": "Starling Home Hub integration (documented Starling API): Protect, thermostat, lock, temperature, weather and home/away devices.",
+      "version": "1.0.0",
+      "apps": [{"file": "apps/Starling Connect.groovy", "primary": true}],
+      "drivers": [
+        {"file": "drivers/Starling Home Away Control.groovy"},
+        {"file": "drivers/Starling Lock.groovy"},
+        {"file": "drivers/Starling Protect.groovy"},
+        {"file": "drivers/Starling Temperature Sensor.groovy"},
+        {"file": "drivers/Starling Thermostat.groovy"},
+        {"file": "drivers/Starling Weather.groovy"}
+      ]
+    }
+  ],
+  "notPackaged": {
+    "apps/Day Lights.groovy": "Third-party (OldChicagoPete, forked from MIT-licensed Circadian Daylight); fork states no license. Not republished via HPM."
+  }
+}

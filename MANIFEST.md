@@ -13,3 +13,10 @@
 | apps/UniFi Protect Event Watchdog.groovy | app | watchdog | 3.0.0 | not on hub yet | 2026-11-15 (audited rewrite, added from repo) |
 | drivers/Frame Notifier.groovy | driver | epaperframe |  | 2208 | 2026-11-09 |
 | drivers/Valetudo Robot Vacuum.groovy | driver | valetudo-hubitat |  | 2157 | 2026-11-14 |
+| apps/Starling Connect.groovy | app | starling |  | not in sync_config | 2026-11-15 (moved from Hubitat-Starling repo) |
+| drivers/Starling Home Away Control.groovy | driver | starling |  | not in sync_config | 2026-11-15 (moved from Hubitat-Starling repo) |
+| drivers/Starling Lock.groovy | driver | starling |  | not in sync_config | 2026-11-15 (moved from Hubitat-Starling repo) |
+| drivers/Starling Protect.groovy | driver | starling |  | not in sync_config | 2026-11-15 (moved from Hubitat-Starling repo) |
+| drivers/Starling Temperature Sensor.groovy | driver | starling |  | not in sync_config | 2026-11-15 (moved from Hubitat-Starling repo) |
+| drivers/Starling Thermostat.groovy | driver | starling |  | not in sync_config | 2026-11-15 (moved from Hubitat-Starling repo) |
+| drivers/Starling Weather.groovy | driver | starling |  | not in sync_config | 2026-11-15 (moved from Hubitat-Starling repo) |
