@@ -1,0 +1,19 @@
+{
+  "packageName": "Home Smoke and CO Response",
+  "author": "FrankTank34567",
+  "version": "1.6.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-15",
+  "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
+  "apps": [
+    {
+      "id": "8c086065-d8fd-516e-9d83-488a4ae24a25",
+      "name": "Home Smoke and CO Response",
+      "namespace": "homeEmergency",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/apps/Home%20Smoke%20and%20CO%20Response.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": true
+    }
+  ]
+}

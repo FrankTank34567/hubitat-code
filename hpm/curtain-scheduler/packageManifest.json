@@ -1,0 +1,28 @@
+{
+  "packageName": "Curtain Scheduler",
+  "author": "FrankTank34567",
+  "version": "1.0.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-15",
+  "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
+  "apps": [
+    {
+      "id": "a4aceedf-3704-5081-ac7e-0bf63eb83787",
+      "name": "Curtain Scheduler",
+      "namespace": "franktank",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/apps/Curtain%20Scheduler.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": true
+    },
+    {
+      "id": "10233955-366f-5ebc-81a8-bb2de6fae196",
+      "name": "Curtain Scheduler Room",
+      "namespace": "franktank",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/apps/Curtain%20Scheduler%20Room.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": false
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "curtain-scheduler": {
+    "version": "1.0.0",
+    "dateReleased": "2026-11-15",
+    "hashes": {
+      "apps/Curtain Scheduler.groovy": "00218307f4cd571cbf0b58cc6523e3294426ff5898c8e4336105264dba13501c",
+      "apps/Curtain Scheduler Room.groovy": "5f6e012ce38bcc56fdf957dcea5e90c712289b000b650375dae04927a4f1cda5"
+    }
+  },
+  "frame-bridge": {
+    "version": "0.6.0",
+    "dateReleased": "2026-11-15",
+    "hashes": {
+      "apps/Frame Bridge.groovy": "30c7e79a1c0150c5f4962528fbfe72efd84e6da843dc5d6f63ecfd65ff978c07"
+    }
+  },
+  "frame-notifier": {
+    "version": "0.1.0",
+    "dateReleased": "2026-11-15",
+    "hashes": {
+      "drivers/Frame Notifier.groovy": "ed56fd987c8a0b5ca8ac1c399e46d2a9e5b9fec6bee89325d8a73ec81a4d1654"
+    }
+  },
+  "hrv-air-quality": {
+    "version": "3.15.1",
+    "dateReleased": "2026-11-15",
+    "hashes": {
+      "apps/HRV - Ventilation Fan & Air Quality Manager.groovy": "729de7db29e823cb03d4a4b5b5435644b4bbcf58eb01def0e2fde6feba119f5f"
+    }
+  },
+  "home-smoke-co": {
+    "version": "1.6.0",
+    "dateReleased": "2026-11-15",
+    "hashes": {
+      "apps/Home Smoke and CO Response.groovy": "fc5d778ab59abd56706805cd82cf595d7444fd2da3109d577257a7fde8619819"
+    }
+  },
+  "local-irrigation-v3": {
+    "version": "3.4.0",
+    "dateReleased": "2026-11-15",
+    "hashes": {
+      "apps/Local Irrigation Manager V3.groovy": "4a0d9503fac31b72a7778b7039283db4b17fbf8c1a77247a52ddf1a49a0f27d1"
+    }
+  },
+  "modem-watchdog": {
+    "version": "2.2.1",
+    "dateReleased": "2026-11-15",
+    "hashes": {
+      "apps/Modem Power Cycle Watchdog.groovy": "55cafa125c96b565fca8ef47e7aecad3f00a3ff4be0442de9d935afc12bc70e3"
+    }
+  },
+  "unifi-protect-watchdog": {
+    "version": "3.0.0",
+    "dateReleased": "2026-11-15",
+    "hashes": {
+      "apps/UniFi Protect Event Watchdog.groovy": "3d7c6221fe597c2a68958e959a3cbb3783ba1d9125d8f9575a2017d99dfa5ef8"
+    }
+  },
+  "valetudo": {
+    "version": "3.13.0",
+    "dateReleased": "2026-11-15",
+    "hashes": {
+      "drivers/Valetudo Robot Vacuum.groovy": "0a9a4a2a77b6bc1594144459148709f8e3220354e5a953a1ca8b5daff24b8a12"
+    }
+  },
+  "starling": {
+    "version": "1.0.0",
+    "dateReleased": "2026-11-15",
+    "hashes": {
+      "apps/Starling Connect.groovy": "22ffdfd88b918c16096dd03d70ba9b7541a5086ee3f196219faa279f605a61ec",
+      "drivers/Starling Home Away Control.groovy": "35daf608f86c784c94c73c1ae194fb7f14596bc739f07d84b29618a5d32f840a",
+      "drivers/Starling Lock.groovy": "8569b9dc41898b45daa2f3d8a9be1249be54ea14da31a581a95f279fa8d5a8ee",
+      "drivers/Starling Protect.groovy": "6e5ca72f00841f46dfcce77049bccb63cc75e83d3073ed13b5da5885878fae82",
+      "drivers/Starling Temperature Sensor.groovy": "f9f533e0daf7a6ff4ec27673dfad4eefe1c5c6ae40a92e55dab5ee3e84b6c995",
+      "drivers/Starling Thermostat.groovy": "ee17d41c6b361fcc2c446a8e157818b7eb2d761d1c68c883b847e6e1d031580f",
+      "drivers/Starling Weather.groovy": "ee35b8c78ba0f6548bb67f3faf709a0b04685e98274c9b401ee994970d6b5e52"
+    }
+  }
+}

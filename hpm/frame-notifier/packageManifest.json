@@ -1,0 +1,17 @@
+{
+  "packageName": "Frame Notifier",
+  "author": "FrankTank34567",
+  "version": "0.1.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-15",
+  "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
+  "drivers": [
+    {
+      "id": "73486297-c7d6-50e0-9cc1-b930f32e6458",
+      "name": "Frame Notifier",
+      "namespace": "epaperframe",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/drivers/Frame%20Notifier.groovy",
+      "required": true
+    }
+  ]
+}
