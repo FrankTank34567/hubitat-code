@@ -23,7 +23,6 @@ that installed the package gets the update from HPM.
 
 - **Curtain Scheduler** – schedules curtains/blinds per room on sunrise/sunset or fixed times, with presence/event triggers and a keep-closed mode.
 - **Curtain Scheduler Room** – child app: one room controlled by Curtain Scheduler.
-- **Day Lights** – adjusts device color temperature, color and/or brightness during daylight hours. Third-party, not packaged (see Licensing).
 - **Frame Bridge** – publishes selected devices' attributes to the e-paper frame service (blocks credential-like attributes).
 - **Home Smoke and CO Response** – three-tier emergency response to smoke/CO alarms and PM2.5 spikes.
 - **HRV / Ventilation Fan & Air Quality Manager** – automates ventilation fans and air purifiers from CO2, PM2.5, outdoor air quality, freeze protection and presence.
@@ -54,7 +53,6 @@ If a sync changes a packaged file, `build_hpm.py` will refuse to build until its
 
 - No repo-wide license: all rights reserved unless a file says otherwise.
 - Starling files are GPL-3.0, as published in the original Hubitat-Starling repo (`licenses/Starling-GPL-3.0.txt`).
-- **Day Lights** is third-party: by OldChicagoPete, forked from Adam Kempenich's Hubitat Circadian Daylight, forked from Kristopher Kubicki's MIT-licensed SmartThings Circadian Daylight. Credits are kept in its header. It is not republished through HPM.
 - `importUrl` values inside some files point at older/incorrect repo locations; code is kept exactly as the hub has it.
 
 ## Linked to epaper-dashboard
