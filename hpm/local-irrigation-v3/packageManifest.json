@@ -1,0 +1,19 @@
+{
+  "packageName": "Local Irrigation Manager V3",
+  "author": "FrankTank34567",
+  "version": "3.4.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-15",
+  "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
+  "apps": [
+    {
+      "id": "77ee0f32-260a-5fe6-a527-0f058b0a93f9",
+      "name": "Local Irrigation Manager V3",
+      "namespace": "FrankTank34567",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/apps/Local%20Irrigation%20Manager%20V3.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": true
+    }
+  ]
+}

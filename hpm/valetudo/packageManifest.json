@@ -1,0 +1,17 @@
+{
+  "packageName": "Valetudo Robot Vacuum",
+  "author": "FrankTank34567",
+  "version": "3.13.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-15",
+  "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
+  "drivers": [
+    {
+      "id": "1631fd42-2253-53e3-a344-a55f52c0d024",
+      "name": "Valetudo Robot Vacuum",
+      "namespace": "valetudo-hubitat",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/drivers/Valetudo%20Robot%20Vacuum.groovy",
+      "required": true
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "packageName": "Starling Connect",
+  "author": "FrankTank34567",
+  "version": "1.0.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-15",
+  "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
+  "apps": [
+    {
+      "id": "82542516-13d3-5c5c-bf17-c234bf5be8ed",
+      "name": "Starling Connect",
+      "namespace": "starling",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/apps/Starling%20Connect.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": true
+    }
+  ],
+  "drivers": [
+    {
+      "id": "4a619e93-24da-50bc-9493-bb883b65e272",
+      "name": "Starling Home Away Control",
+      "namespace": "starling",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/drivers/Starling%20Home%20Away%20Control.groovy",
+      "required": true
+    },
+    {
+      "id": "cff1ed42-b503-5561-8788-a2006c4c20fd",
+      "name": "Starling Lock",
+      "namespace": "starling",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/drivers/Starling%20Lock.groovy",
+      "required": true
+    },
+    {
+      "id": "75ddabc4-19b9-5f45-858a-78f4c1a918c0",
+      "name": "Starling Protect",
+      "namespace": "starling",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/drivers/Starling%20Protect.groovy",
+      "required": true
+    },
+    {
+      "id": "e7fe16c1-4c19-594e-b22b-30eb5456d13f",
+      "name": "Starling Temperature Sensor",
+      "namespace": "starling",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/drivers/Starling%20Temperature%20Sensor.groovy",
+      "required": true
+    },
+    {
+      "id": "a61349a8-d836-541d-8e7c-f02ba6eeab2b",
+      "name": "Starling Thermostat",
+      "namespace": "starling",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/drivers/Starling%20Thermostat.groovy",
+      "required": true
+    },
+    {
+      "id": "480a28c9-1567-592c-9a6c-99dc00f3e9fe",
+      "name": "Starling Weather",
+      "namespace": "starling",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/drivers/Starling%20Weather.groovy",
+      "required": true
+    }
+  ]
+}

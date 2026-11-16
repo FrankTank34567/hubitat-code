@@ -1,0 +1,19 @@
+{
+  "packageName": "UniFi Protect Event Watchdog",
+  "author": "FrankTank34567",
+  "version": "3.0.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-15",
+  "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
+  "apps": [
+    {
+      "id": "eaf16670-2dda-5495-a2a1-e84e08a5a43b",
+      "name": "UniFi Protect Event Watchdog",
+      "namespace": "watchdog",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/apps/UniFi%20Protect%20Event%20Watchdog.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": true
+    }
+  ]
+}
