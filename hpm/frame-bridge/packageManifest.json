@@ -1,0 +1,19 @@
+{
+  "packageName": "Frame Bridge",
+  "author": "FrankTank34567",
+  "version": "0.6.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-15",
+  "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
+  "apps": [
+    {
+      "id": "61d626bd-6f35-5c70-84db-fff26b8ecb79",
+      "name": "Frame Bridge",
+      "namespace": "epaperframe",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/apps/Frame%20Bridge.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": true
+    }
+  ]
+}

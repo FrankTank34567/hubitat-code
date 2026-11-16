@@ -1,0 +1,76 @@
+{
+  "author": "FrankTank34567",
+  "gitHubUrl": "https://github.com/FrankTank34567/hubitat-code",
+  "packages": [
+    {
+      "id": "7958dbf5-3266-586e-af53-4a69573c170c",
+      "name": "Curtain Scheduler",
+      "category": "Convenience",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/hpm/curtain-scheduler/packageManifest.json",
+      "description": "Schedules curtains/blinds per room on sunrise/sunset or fixed times, with presence/event triggers and a keep-closed mode."
+    },
+    {
+      "id": "6fcd6d6d-3cc3-591b-8bc8-8609e708c7af",
+      "name": "Frame Bridge",
+      "category": "Integrations",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/hpm/frame-bridge/packageManifest.json",
+      "description": "Publishes selected devices' attributes to the e-paper frame service."
+    },
+    {
+      "id": "a7d4aa34-737a-55f5-8513-687ba3f1f984",
+      "name": "Frame Notifier",
+      "category": "Notifications",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/hpm/frame-notifier/packageManifest.json",
+      "description": "Notification device that sends text to the e-paper frame."
+    },
+    {
+      "id": "eac8cf29-330a-565e-b72a-22cd204c6d02",
+      "name": "HRV / Ventilation Fan & Air Quality Manager",
+      "category": "Control",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/hpm/hrv-air-quality/packageManifest.json",
+      "description": "Automates ventilation fans and air purifiers from CO2, PM2.5, outdoor air quality, freeze protection and presence."
+    },
+    {
+      "id": "5e960243-2cf3-513a-ba56-b6f8385c12e0",
+      "name": "Home Smoke and CO Response",
+      "category": "Safety & Security",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/hpm/home-smoke-co/packageManifest.json",
+      "description": "Three-tier emergency response to smoke/CO alarms and PM2.5 spikes."
+    },
+    {
+      "id": "0ed6490a-c9e7-5542-9671-6c17ba0e9fdc",
+      "name": "Local Irrigation Manager V3",
+      "category": "Control",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/hpm/local-irrigation-v3/packageManifest.json",
+      "description": "Local-first irrigation using FAO-56 Penman-Monteith ET, per-zone soil gating and valve monitoring."
+    },
+    {
+      "id": "6b161608-3f49-521e-919d-46b2caec4065",
+      "name": "Modem Power Cycle Watchdog",
+      "category": "Utility",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/hpm/modem-watchdog/packageManifest.json",
+      "description": "Restarts the modem via a smart plug when the internet is down and the modem is at fault, with restart-loop guards."
+    },
+    {
+      "id": "47bfe3cd-fa14-557d-9ec1-d7138692ce85",
+      "name": "UniFi Protect Event Watchdog",
+      "category": "Utility",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/hpm/unifi-protect-watchdog/packageManifest.json",
+      "description": "Detects a silently dead UniFi Protect event stream and recovers it with a rate-limited initialize()."
+    },
+    {
+      "id": "7e4787e4-516b-56b2-9d81-4730e6552f94",
+      "name": "Valetudo Robot Vacuum",
+      "category": "Integrations",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/hpm/valetudo/packageManifest.json",
+      "description": "MQTT + REST driver for Valetudo robot vacuums."
+    },
+    {
+      "id": "c4ac5aa0-bb84-5dcd-9513-de9bc26c3fd1",
+      "name": "Starling Connect",
+      "category": "Integrations",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/hpm/starling/packageManifest.json",
+      "description": "Starling Home Hub integration (documented Starling API): Protect, thermostat, lock, temperature, weather and home/away devices."
+    }
+  ]
+}

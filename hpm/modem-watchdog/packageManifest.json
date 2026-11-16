@@ -1,0 +1,19 @@
+{
+  "packageName": "Modem Power Cycle Watchdog",
+  "author": "FrankTank34567",
+  "version": "2.2.1",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-15",
+  "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
+  "apps": [
+    {
+      "id": "4c01e3d6-c8dd-5d83-a22c-20309748536b",
+      "name": "Modem Power Cycle Watchdog",
+      "namespace": "franktank",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/apps/Modem%20Power%20Cycle%20Watchdog.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": true
+    }
+  ]
+}
