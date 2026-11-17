@@ -9,7 +9,7 @@
       "name": "Curtain Scheduler",
       "category": "Convenience",
       "description": "Schedules curtains/blinds per room on sunrise/sunset or fixed times, with presence/event triggers and a keep-closed mode.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "apps": [
         {
           "file": "apps/Curtain Scheduler.groovy",
@@ -50,7 +50,7 @@
       "name": "HRV / Ventilation Fan & Air Quality Manager",
       "category": "Control",
       "description": "Automates ventilation fans and air purifiers from CO2, PM2.5, outdoor air quality, freeze protection and presence.",
-      "version": "3.15.1",
+      "version": "3.15.2",
       "apps": [
         {
           "file": "apps/HRV - Ventilation Fan & Air Quality Manager.groovy",
@@ -76,7 +76,7 @@
       "name": "Local Irrigation Manager V3",
       "category": "Control",
       "description": "Local-first irrigation using FAO-56 Penman-Monteith ET, per-zone soil gating and valve monitoring.",
-      "version": "3.4.0",
+      "version": "3.4.1",
       "apps": [
         {
           "file": "apps/Local Irrigation Manager V3.groovy",
@@ -115,7 +115,7 @@
       "name": "Valetudo Robot Vacuum",
       "category": "Integrations",
       "description": "MQTT + REST driver for Valetudo robot vacuums.",
-      "version": "3.13.0",
+      "version": "3.13.1",
       "drivers": [
         {
           "file": "drivers/Valetudo Robot Vacuum.groovy"

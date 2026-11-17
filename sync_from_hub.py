@@ -4,6 +4,11 @@
 Read-only: only HTTP GET requests are made to the hub. No credentials are
 read, stored, or written (the hub must have Hub Login Security off).
 Commits only if something changed. Run: python -I sync_from_hub.py [--no-commit]
+
+The hub address is a per-user setting and is never committed. Give it as the
+HUBITAT_HUB environment variable (for example HUBITAT_HUB=http://192.168.1.10),
+or as {"hub": "http://..."} in sync_config.local.json next to this file
+(git-ignored). sync_config.json holds only a placeholder.
 """
 import json, re, subprocess, sys, urllib.request, datetime, os
 
@@ -57,15 +62,37 @@ def old_dates():
     return dates
 
 
+PLACEHOLDER = "YOUR-HUB-ADDRESS"
+
+
+def hub_address(cfg):
+    """HUBITAT_HUB, then sync_config.local.json, then sync_config.json."""
+    hub = os.environ.get("HUBITAT_HUB", "").strip()
+    if not hub:
+        try:
+            local = json.load(open(os.path.join(ROOT, "sync_config.local.json"), encoding="utf-8"))
+            hub = str(local.get("hub", "")).strip()
+        except OSError:
+            pass
+    hub = hub or str(cfg.get("hub", "")).strip()
+    if not hub or PLACEHOLDER in hub:
+        sys.exit("Set the hub address: HUBITAT_HUB=http://<hub-ip> python -I sync_from_hub.py, "
+                 "or put {\"hub\": \"http://<hub-ip>\"} in sync_config.local.json (git-ignored).")
+    if not re.match(r"https?://", hub):
+        hub = "http://" + hub
+    return hub.rstrip("/")
+
+
 def main():
     cfg = json.load(open(os.path.join(ROOT, "sync_config.json"), encoding="utf-8"))
+    hub = hub_address(cfg)
     today = datetime.date.today().isoformat()
     prev = old_dates()
     rows = []
     for key, kind, ep, folder in KINDS:
         os.makedirs(os.path.join(ROOT, folder), exist_ok=True)
         for hub_id in cfg.get(key, []):
-            d = json.loads(get(cfg["hub"] + ep + str(hub_id)))
+            d = json.loads(get(hub + ep + str(hub_id)))
             src = d["source"]
             name = field(src, "name") or d.get("name") or str(hub_id)
             rel = "%s/%s.groovy" % (folder, safe(name))

@@ -1,9 +1,9 @@
 {
   "packageName": "HRV / Ventilation Fan & Air Quality Manager",
   "author": "FrankTank34567",
-  "version": "3.15.1",
+  "version": "3.15.2",
   "minimumHEVersion": "2.2.9",
-  "dateReleased": "2026-11-15",
+  "dateReleased": "2026-11-17",
   "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
   "apps": [
     {

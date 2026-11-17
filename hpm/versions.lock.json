@@ -1,10 +1,10 @@
 {
   "curtain-scheduler": {
-    "version": "1.0.0",
-    "dateReleased": "2026-11-15",
+    "version": "1.0.1",
+    "dateReleased": "2026-11-17",
     "hashes": {
       "apps/Curtain Scheduler.groovy": "00218307f4cd571cbf0b58cc6523e3294426ff5898c8e4336105264dba13501c",
-      "apps/Curtain Scheduler Room.groovy": "5f6e012ce38bcc56fdf957dcea5e90c712289b000b650375dae04927a4f1cda5"
+      "apps/Curtain Scheduler Room.groovy": "1640a1159f14a3ed1eb4a38cc083ea930dbea635125c34f850e7df74d3da9701"
     }
   },
   "frame-bridge": {
@@ -22,10 +22,10 @@
     }
   },
   "hrv-air-quality": {
-    "version": "3.15.1",
-    "dateReleased": "2026-11-15",
+    "version": "3.15.2",
+    "dateReleased": "2026-11-17",
     "hashes": {
-      "apps/HRV - Ventilation Fan & Air Quality Manager.groovy": "729de7db29e823cb03d4a4b5b5435644b4bbcf58eb01def0e2fde6feba119f5f"
+      "apps/HRV - Ventilation Fan & Air Quality Manager.groovy": "f07d40c71ee54e28abd65287deca273f6f0485a192e57e659b0a7864c2e7da78"
     }
   },
   "home-smoke-co": {
@@ -36,10 +36,10 @@
     }
   },
   "local-irrigation-v3": {
-    "version": "3.4.0",
-    "dateReleased": "2026-11-15",
+    "version": "3.4.1",
+    "dateReleased": "2026-11-17",
     "hashes": {
-      "apps/Local Irrigation Manager V3.groovy": "4a0d9503fac31b72a7778b7039283db4b17fbf8c1a77247a52ddf1a49a0f27d1"
+      "apps/Local Irrigation Manager V3.groovy": "d09050dc007cf37ffeaaa993c3a87cccb4aa5d3800ddbf81ff90abfd25be9a3e"
     }
   },
   "modem-watchdog": {
@@ -57,10 +57,10 @@
     }
   },
   "valetudo": {
-    "version": "3.13.0",
-    "dateReleased": "2026-11-15",
+    "version": "3.13.1",
+    "dateReleased": "2026-11-17",
     "hashes": {
-      "drivers/Valetudo Robot Vacuum.groovy": "0a9a4a2a77b6bc1594144459148709f8e3220354e5a953a1ca8b5daff24b8a12"
+      "drivers/Valetudo Robot Vacuum.groovy": "54bf22539d72499da078bf6ebf24c201879284ab25200a363d3806e590631c91"
     }
   },
   "starling": {

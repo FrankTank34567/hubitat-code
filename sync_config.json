@@ -1,5 +1,5 @@
 {
-  "hub": "http://192.168.1.10",
+  "hub": "http://YOUR-HUB-ADDRESS",
   "apps": [
     1025,
     1026,

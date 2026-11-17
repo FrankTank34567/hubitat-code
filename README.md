@@ -44,6 +44,7 @@ that installed the package gets the update from HPM.
 ## Hub sync
 
 `python -I sync_from_hub.py` pulls the code ids in `sync_config.json` from the hub with read-only GETs and commits if anything differs.
+The hub address is a per-user setting, not part of the repo: set `HUBITAT_HUB=http://<hub-ip>` or put `{"hub": "http://<hub-ip>"}` in `sync_config.local.json` (git-ignored). `sync_config.json` keeps only the code ids and a placeholder.
 Now that GitHub is the source of truth, use it to detect drift (code edited on a hub but not here), not as the normal way to change code.
 `MANIFEST.md` lists each file's namespace, header version, hub code id and date pulled.
 The sync rewrites `MANIFEST.md` from `sync_config.json` only, so add a file's hub code id there or its row is dropped.
