@@ -38,8 +38,12 @@
  *   switch                "on" cleaning | "off" docked/idle/paused
  *   battery               0-100 (%)
  *   batteryStatus         none | charging | discharging | charged
- *                         (since 3.13.0 also "charged" when docked at the robot's
- *                         Charging Limit quirk, e.g. MOVA V50 stops at 90% and reports none)
+ *                         (same four states Matter's PowerSource batChargeState uses:
+ *                         charging=IsCharging, charged=IsAtFullCharge, discharging/none=
+ *                         IsNotCharging). Robots that only ever report "none" (MOVA V50) get
+ *                         a derived value since 3.13.0 ("charged" at the Charging Limit) and
+ *                         3.14.0 ("charging" while docked and rising, "discharging" when
+ *                         falling or off the dock). Derived values are best effort.
  *   robotStatus           idle|cleaning|returning|docked|paused|error|manual_control|moving
  *   robotStatusFlag       none|segment|zone|spot|target|resumable|mapping
  *                         (since Valetudo 2026.08.0 "resumable" can also appear while
@@ -110,8 +114,8 @@
  *                  discoverRobot (REST: what this robot supports)
  *
  * Author:  Hubitat Community contribution
- * Version: 3.13.0
- * Date:    2026-11-14
+ * Version: 3.14.0
+ * Date:    2026-11-18
  *
  * Copyright 2025 Contributors. Licensed under the Apache License, Version 2.0.
  * You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -121,6 +125,21 @@
  * UNENCRYPTED MQTT and (optionally) UNAUTHENTICATED HTTP on your local network,
  * which mirrors how Valetudo itself operates. Do NOT expose your MQTT broker or
  * robot's REST API to the public internet.
+ *
+ * v3.14.0 — DERIVED CHARGING / DISCHARGING FOR ROBOTS THAT ONLY REPORT "none"
+ *
+ *   The MOVA V50 reports BatteryStateAttribute flag "none" whether it is charging,
+ *   full or draining (observed 2026-11-14 and 2026-11-18: 85 -> 89 % in 4 min on the
+ *   dock, flag "none" throughout). batteryStatus therefore never said "charging".
+ *   Only when the robot itself reports "none", batteryStatus is now derived:
+ *     - docked and at/above the Charging Limit quirk  -> charged     (as in 3.13.0)
+ *     - docked and the level rose within CHARGE_TREND_WINDOW_SEC     -> charging
+ *     - the level fell within the window, or not docked              -> discharging
+ *     - otherwise (docked, steady below the limit)                   -> none
+ *   The window is re-checked by a scheduled batteryTrendCheck(), so "charging" falls
+ *   back once the level stops rising. Robots that report real flags (X40) are untouched.
+ *   Values match Matter's batChargeState vocabulary, so a Hubitat-to-Matter bridge can map
+ *   them 1:1. A bridge that reads Valetudo itself (matterbridge-valetudo) is not affected.
  *
  * v3.13.0 — ADAPTIVE: THE DRIVER LEARNS WHAT EACH ROBOT SUPPORTS
  *
@@ -526,7 +545,7 @@ import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
 import groovy.transform.Field
 
-@Field static final String DRIVER_VERSION = "3.13.0"
+@Field static final String DRIVER_VERSION = "3.14.0"
 
 // REST circuit breaker tuning. See restPut() / restFailed() / restSucceeded().
 @Field static final int REST_FAIL_THRESHOLD      = 3     // consecutive failures before the breaker opens
@@ -701,6 +720,10 @@ private boolean isNonAlertText(String s) {
 
 // Quirk title holding the robot's charge ceiling (MOVA V50: 100%/95%/90%/85%/80%).
 @Field static final String QUIRK_TITLE_CHARGE_LIMIT = "Charging Limit"
+
+// v3.14.0: how long a battery level change counts as a trend (charging/discharging).
+// Measured on a MOVA V50: +1 %/min while charging; slower near the top, so 5 min.
+@Field static final int CHARGE_TREND_WINDOW_SEC = 300
 
 // Topic filters used when the targetedSubscriptions preference is ON. Exactly the
 // topics parse() handles (plus their siblings via "+"), and nothing else — so the
@@ -1361,7 +1384,8 @@ def parse(String description) {
         case sub == "BatteryStateAttribute/level":
             sendIntEvent("battery", payload, "%")
             // v3.13.0: remember the level for the Charging Limit check (currentValue lags).
-            try { state.lastBatteryLevel = Double.valueOf(payload).intValue() } catch (e) { }
+            // v3.14.0: also tracks the trend (rising/falling) for derived charge state.
+            try { noteBatteryLevel(Double.valueOf(payload).intValue()) } catch (e) { }
             publishBatteryStatus()
             break
         case sub == "BatteryStateAttribute/status":
@@ -1496,7 +1520,10 @@ private void handleRobotStatus(String payload) {
     sendEvent(name: "switch", value: sw, isStateChange: true)
     logInfo "Status → ${payload} (switch: ${sw})"
     // v3.13.0: the Charging Limit check depends on being docked; currentValue lags.
+    String prevStatus = state.lastRobotStatus as String
     state.lastRobotStatus = payload ?: "unknown"
+    // v3.14.0: a rise seen before docking/undocking says nothing about the new state.
+    if (prevStatus != state.lastRobotStatus) { state.remove("batteryRiseAt"); state.remove("batteryFallAt") }
     publishBatteryStatus()
 
     // Battery severity depends on robotStatus, so a status change can escalate or
@@ -1514,15 +1541,40 @@ private void setBatteryFlag(String flag) {
     publishBatteryStatus()
 }
 
+// v3.14.0: record the battery level and when it last rose or fell, then schedule a
+// re-check so a derived "charging"/"discharging" expires after CHARGE_TREND_WINDOW_SEC.
+private void noteBatteryLevel(Integer lvl) {
+    if (lvl == null) return
+    Integer prev = (state.lastBatteryLevel != null) ? (state.lastBatteryLevel as Integer) : null
+    state.lastBatteryLevel = lvl
+    if (prev == null || lvl == prev) return
+    if (lvl > prev) { state.batteryRiseAt = now(); state.remove("batteryFallAt") }
+    else            { state.batteryFallAt = now(); state.remove("batteryRiseAt") }
+    runIn(CHARGE_TREND_WINDOW_SEC + 5, "batteryTrendCheck")
+}
+
+// Public only because runIn() needs a callable method.
+def batteryTrendCheck() { publishBatteryStatus() }
+
 private void publishBatteryStatus() {
     String flag = (state.rawBatteryFlag ?: null) as String
     if (flag == null) return   // nothing reported yet
     String out = flag
     Integer limit = chargeLimitPct()
     Integer level = (state.lastBatteryLevel != null) ? (state.lastBatteryLevel as Integer) : null
-    if (flag == "none" && limit != null && level != null && level >= limit &&
-            state.lastRobotStatus == "docked") {
-        out = "charged"
+    if (flag == "none") {
+        boolean docked  = (state.lastRobotStatus == "docked")
+        long    nowMs   = now()
+        long    window  = CHARGE_TREND_WINDOW_SEC * 1000L
+        boolean rising  = state.batteryRiseAt != null && (nowMs - (state.batteryRiseAt as Long)) <= window
+        boolean falling = state.batteryFallAt != null && (nowMs - (state.batteryFallAt as Long)) <= window
+        if (docked && limit != null && level != null && level >= limit) {
+            out = "charged"                      // v3.13.0
+        } else if (docked && rising) {
+            out = "charging"                     // v3.14.0
+        } else if (falling || (state.lastRobotStatus != null && !docked)) {
+            out = "discharging"                  // v3.14.0
+        }
     }
     if (state.lastBatteryStatus == out) return
     state.lastBatteryStatus = out
@@ -2210,7 +2262,7 @@ private void applyRestAttribute(Map attr) {
         case "BatteryStateAttribute":
             if (attr.level != null) {
                 sendEvent(name: "battery", value: (attr.level as Integer), unit: "%", isStateChange: true)
-                state.lastBatteryLevel = attr.level as Integer
+                noteBatteryLevel(attr.level as Integer)
             }
             if (attr.flag) setBatteryFlag(attr.flag as String)
             else publishBatteryStatus()

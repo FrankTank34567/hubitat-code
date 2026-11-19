@@ -15,6 +15,7 @@ def newDriver(String fixtureName, Map prefs = [:]) {
     def events = [], puts = [], pubs = [], logs = [], gets = []
     def attrs = [mqttStatus: "connected"]
     def st = [:]
+    def clock = [t: 1_800_000_000_000L], runIns = []
     def settings = [robotIp: "10.0.0.9", logEnable: false, txtEnable: true, topicPrefix: "valetudo",
                     robotIdentifier: "Quay2", restFallback: true] + prefs
     def b = new Binding()
@@ -28,10 +29,10 @@ def newDriver(String fixtureName, Map prefs = [:]) {
     b.setVariable("interfaces", [mqtt: [publish: { t, p, q, r -> pubs << [t, p] }, isConnected: { true },
                                         parseMessage: { d -> new JsonSlurper().parseText(d) }, subscribe: { t, q -> }, connect: { a, b2, c, d -> }, disconnect: {}]])
     b.setVariable("sendEvent", { Map m -> events << m; attrs[m.name] = m.value })
-    b.setVariable("runIn", { Object[] a -> })
+    b.setVariable("runIn", { Object[] a -> runIns << a })
     b.setVariable("runEvery5Minutes", { a -> })
     b.setVariable("unschedule", { a -> })
-    b.setVariable("now", { System.currentTimeMillis() })
+    b.setVariable("now", { clock.t })
     b.setVariable("httpGet", { Map p, Closure c ->
         String path = (p.uri as String).replaceFirst(/^http:\/\/[^\/]+/, "")
         gets << path
@@ -41,7 +42,7 @@ def newDriver(String fixtureName, Map prefs = [:]) {
     })
     b.setVariable("httpPut", { Map p, Closure c -> puts << [p.uri, p.body]; c([status: 200]) })
     def d = new ValetudoDriver(b)
-    return [d: d, events: events, puts: puts, pubs: pubs, logs: logs, gets: gets, attrs: attrs, st: st, settings: settings, b: b]
+    return [d: d, events: events, puts: puts, pubs: pubs, logs: logs, gets: gets, attrs: attrs, st: st, settings: settings, b: b, clock: clock, runIns: runIns]
 }
 
 def lastEvent(ctx, String n) { ctx.events.findAll { it.name == n }.collect { it.value }.with { it ? it[-1] : null } }
@@ -93,11 +94,35 @@ H.check("V50: setQuirkByTitle Charging Limit 100% -> PUT with V50 UUID",
 
 // MQTT path: level below limit -> raw flag; back at limit -> charged
 v.d.parse(JsonOutput.toJson([topic: "valetudo/Quay2/BatteryStateAttribute/level", payload: "85"]))
-H.check("mqtt: 85% docked with flag none -> none", lastEvent(v, "batteryStatus") == "none", "${lastEvent(v,'batteryStatus')}")
+H.check("mqtt: docked, 90 -> 85% with flag none -> discharging (3.14.0 drop)", lastEvent(v, "batteryStatus") == "discharging", "${lastEvent(v,'batteryStatus')}")
 v.d.parse(JsonOutput.toJson([topic: "valetudo/Quay2/BatteryStateAttribute/level", payload: "90"]))
 H.check("mqtt: 90% docked -> charged", lastEvent(v, "batteryStatus") == "charged")
 v.d.parse(JsonOutput.toJson([topic: "valetudo/Quay2/StatusStateAttribute/status", payload: "cleaning"]))
-H.check("mqtt: leaves dock -> none", lastEvent(v, "batteryStatus") == "none")
+H.check("mqtt: leaves dock -> discharging (3.14.0, was none)", lastEvent(v, "batteryStatus") == "discharging", "${lastEvent(v,'batteryStatus')}")
+
+// v3.14.0 derived trend, robot keeps reporting flag "none"
+def lvl = { String n -> v.d.parse(JsonOutput.toJson([topic: "valetudo/Quay2/BatteryStateAttribute/level", payload: n])) }
+def sts = { String n -> v.d.parse(JsonOutput.toJson([topic: "valetudo/Quay2/StatusStateAttribute/status", payload: n])) }
+lvl("70"); v.clock.t += 60_000; lvl("62")
+H.check("trend: cleaning, level falling -> discharging", lastEvent(v, "batteryStatus") == "discharging")
+sts("returning"); sts("docked")
+H.check("trend: just docked, no rise yet -> none", lastEvent(v, "batteryStatus") == "none", "${lastEvent(v,'batteryStatus')}")
+v.clock.t += 60_000; lvl("63")
+H.check("trend: docked and rising -> charging", lastEvent(v, "batteryStatus") == "charging", "${lastEvent(v,'batteryStatus')}")
+H.check("trend: a re-check is scheduled", v.runIns.any { it[1] == "batteryTrendCheck" })
+v.clock.t += 60_000; lvl("64")
+H.check("trend: still rising -> charging", lastEvent(v, "batteryStatus") == "charging")
+v.clock.t += 301_000; v.d.batteryTrendCheck()
+H.check("trend: no rise for 5 min, below limit -> none", lastEvent(v, "batteryStatus") == "none", "${lastEvent(v,'batteryStatus')}")
+v.clock.t += 60_000; lvl("63")
+H.check("trend: docked but dropping -> discharging", lastEvent(v, "batteryStatus") == "discharging", "${lastEvent(v,'batteryStatus')}")
+v.clock.t += 60_000; lvl("64"); v.clock.t += 60_000; lvl("90")
+H.check("trend: docked at limit -> charged beats charging", lastEvent(v, "batteryStatus") == "charged")
+sts("cleaning"); v.clock.t += 60_000; lvl("91")
+H.check("trend: rising off the dock is never charging", lastEvent(v, "batteryStatus") == "discharging", "${lastEvent(v,'batteryStatus')}")
+def evBefore = v.events.count { it.name == "batteryStatus" }
+v.clock.t += 60_000; lvl("88"); lvl("87")
+H.check("trend: no duplicate events for an unchanged status", v.events.count { it.name == "batteryStatus" } == evBefore)
 v.d.parse(JsonOutput.toJson([topic: "valetudo/Quay2/BatteryStateAttribute/status", payload: "discharging"]))
 H.check("mqtt: real flag passes through", lastEvent(v, "batteryStatus") == "discharging")
 

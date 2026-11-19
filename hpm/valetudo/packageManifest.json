@@ -1,9 +1,9 @@
 {
   "packageName": "Valetudo Robot Vacuum",
   "author": "FrankTank34567",
-  "version": "3.13.1",
+  "version": "3.14.0",
   "minimumHEVersion": "2.2.9",
-  "dateReleased": "2026-11-17",
+  "dateReleased": "2026-11-18",
   "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
   "drivers": [
     {

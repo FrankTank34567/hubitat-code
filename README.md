@@ -39,7 +39,7 @@ that installed the package gets the update from HPM.
 
 ## Archive
 
-- `archive/valetudo-hubitat-driver/` – the former standalone Valetudo repo (driver 3.12.0, 3.11.0 original, its diff, and its separate offline test suite). Kept for history; the live driver is `drivers/Valetudo Robot Vacuum.groovy` (3.13.0).
+- `archive/valetudo-hubitat-driver/` – the former standalone Valetudo repo (driver 3.12.0, 3.11.0 original, its diff, and its separate offline test suite). Kept for history; the live driver is `drivers/Valetudo Robot Vacuum.groovy` (3.14.0).
 
 ## Hub sync
 
