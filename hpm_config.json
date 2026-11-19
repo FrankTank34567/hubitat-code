@@ -115,7 +115,7 @@
       "name": "Valetudo Robot Vacuum",
       "category": "Integrations",
       "description": "MQTT + REST driver for Valetudo robot vacuums.",
-      "version": "3.13.1",
+      "version": "3.14.0",
       "drivers": [
         {
           "file": "drivers/Valetudo Robot Vacuum.groovy"
