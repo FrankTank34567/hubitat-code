@@ -153,6 +153,17 @@ H.check("offline: recovery cancels the reminder", v.unscheduled.contains("robotO
 v.logs.clear(); homie("lost"); v.clock.t += 30_000; homie("ready")
 H.check("offline: a 30 s blip logs nothing above debug", !v.logs.any { it.startsWith("W ") || it.startsWith("I ") }, "${v.logs}")
 
+
+// v3.16.0: no MQTT commands while the robot is offline on MQTT
+homie("lost"); v.pubs.clear(); int putsB = v.puts.size()
+v.d.start()
+H.check("3.16: robot offline -> start goes over REST, not MQTT", v.pubs.isEmpty() && v.puts.size() == putsB + 1 && v.puts[-1][1]?.contains("start"), "pubs=${v.pubs} puts=${v.puts.drop(putsB)}")
+v.d.setFanSpeed("low")
+H.check("3.16: robot offline -> fan speed over REST", v.pubs.isEmpty() && v.puts.size() == putsB + 2)
+homie("ready"); v.pubs.clear()
+v.d.start()
+H.check("3.16: robot back online -> start goes over MQTT again", v.pubs.any { it[0].endsWith("BasicControlCapability/operation/set") && it[1] == "START" })
+
 // Alert classification
 H.check("alert: drainage -> supply", v.d.severityOf("Abnormal dock drainage. Check if the drain pipe is clogged.") == "supply")
 H.check("alert: gyroscope still fault", v.d.severityOf("Gyroscope sensor error") == "fault")
