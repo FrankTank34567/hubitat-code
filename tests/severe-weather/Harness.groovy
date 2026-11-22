@@ -59,9 +59,13 @@ def newApp(Map prefs = [:], Map st0 = [:]) {
     b.setVariable("runIn", { Object[] a -> runIns << a })
     b.setVariable("asynchttpGet", { String h, Map p -> gets << [h, p.uri] })
     b.setVariable("getChildDevice", { String id -> null })
+    b.setVariable("timeOfDayIsBetween", { Date a1, Date b1, Date c1, TimeZone tz ->
+        def mins = { Date d -> def cal = Calendar.getInstance(tz); cal.setTime(d); cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE) }
+        def s1 = mins(a1), e1 = mins(b1), n1 = mins(new Date(clock.t))
+        s1 <= e1 ? (n1 >= s1 && n1 < e1) : (n1 >= s1 || n1 < e1) })
     b.setVariable("toDateTime", { String s -> Date.from(java.time.OffsetDateTime.parse(s).toInstant()) })
     def app = new SevereWeatherApp(b)
-    def ctx = [app: app, st: st, settings: settings, clock: clock, pushes: pushes, logs: logs, gets: gets, temp: temp, rain: rain]
+    def ctx = [app: app, b: b, st: st, settings: settings, clock: clock, pushes: pushes, logs: logs, gets: gets, temp: temp, rain: rain]
     // Seed a little temperature history so trends exist.
     return ctx
 }
@@ -175,7 +179,7 @@ H.check("NWS Freeze-level ALARM (not ice) while expected: ALARM, muted", frState
 def h = newApp([seasonalFreezeAuto: false], [freezeDayLog: [true] * 14])
 step(h, 34.0); step(h, 30.0, 16L * 60000); step(h, 36.0, 16L * 60000); step(h, 30.0, 16L * 60000)
 H.check("mute off: alerts, re-alert window limits to 1", freezePushes(h).count { it.msg.contains("ALARM") } == 1, "${freezePushes(h)}")
-def h2 = newApp([seasonalFreezeAuto: false, freezeRealertHours: 0], [freezeDayLog: [true] * 14])
+def h2 = newApp([seasonalFreezeAuto: false, n_freezeAlarm_cooldown: 0, n_freezeAlarm_maxPerDay: 0], [freezeDayLog: [true] * 14])
 step(h2, 34.0); step(h2, 30.0, 16L * 60000); step(h2, 36.0, 16L * 60000); step(h2, 30.0, 16L * 60000)
 H.check("window 0: every ALARM entry alerts (2)", freezePushes(h2).count { it.msg.contains("ALARM") } == 2, "${freezePushes(h2)}")
 
@@ -217,7 +221,7 @@ i2.app.forecastHandler(resp(fcJson), null)
 i2.settings.sensorRain.attrs.rainRate = 0.05
 step(i2, 33.0)
 H.check("ice uncorroborated: ICE WARNING tier", frState(i2) == "ICE WARNING", frState(i2))
-H.check("ice uncorroborated: still not muted (warn push honoured)", i2.pushes.any { it.msg.contains("Freezing Rain/Ice") }, "${i2.pushes}")
+H.check("ice uncorroborated: still not muted (warn push honoured)", i2.pushes.any { it.msg.contains("Possible freezing rain") }, "${i2.pushes}")
 // NWS forecast text corroborates.
 def iceFc = fcJson.replaceFirst('"shortForecast": "Patchy Fog"', '"shortForecast": "Freezing Rain Likely"')
 def i3 = newApp([:], [freezeDayLog: [true] * 14])
@@ -250,6 +254,94 @@ n3.app.noaaResponseHandler(resp(two), null)
 H.check("NWS: later Frost Advisory does not downgrade Freeze Warning", n3.st.noaaAlertsMap.Freeze == "ALARM", "${n3.st.noaaAlertsMap}")
 H.check("NWS Freeze Warning while freeze expected: muted", frState(n3) == "ALARM" && freezePushes(n3).isEmpty(), "${frState(n3)} ${n3.pushes}")
 
-H.check("no engine errors in any run", ![a, b, b2, c, d, i1, i2, i3, i4, n1, n2, n3, d2, e, f, g, g2, h, h2, k, k2, m].any { it.st.lastEngineError })
+// ── 13. Notification Center ─────────────────────────────────────────────────
+// Legacy settings carry over: Rob's hub has freezeWarnNotify=false.
+def q1 = newApp([freezeWarnNotify: false], [freezeDayLog: warmLog.clone(), lastRoutineFreezeAlertTs: T0 - 5L * 86400000])
+q1.app.forecastHandler(resp(mild), null)
+def evW = q1.app.notifyEvent("freezeWarn")
+H.check("NC: legacy freezeWarnNotify=false carries into freezeWarn push", q1.app.nBool(evW, "push") == false)
+H.check("NC: new setting overrides legacy", { q1.settings.n_freezeWarn_push = true; def r = q1.app.nBool(evW, "push"); q1.settings.remove("n_freezeWarn_push"); r }())
+H.check("NC: 24 notification types registered", q1.app.notifyEvents().size() == 24, "${q1.app.notifyEvents().size()}")
+// Per-type off: freezeAlarm push off -> nothing sent, logged as OFF
+def q2 = newApp([n_freezeAlarm_push: false], [freezeDayLog: warmLog.clone(), lastRoutineFreezeAlertTs: T0 - 5L * 86400000])
+q2.app.forecastHandler(resp(mild), null)
+step(q2, 34.0); step(q2, 30.0, 16L * 60000)
+H.check("NC: freezeAlarm switched off -> no push, logged", freezePushes(q2).isEmpty() && q2.st.notifyLog.any { it.contains("OFF Freeze ALARM") }, "${q2.pushes} ${q2.st.notifyLog}")
+// Hold-off: ALARM held 30 min, temp recovers within it -> dropped; stays -> sent
+def q3 = newApp([n_freezeAlarm_holdoff: 30, freezeHysteresis: 0.0, debounceMins: 1], [freezeDayLog: warmLog.clone(), lastRoutineFreezeAlertTs: T0 - 5L * 86400000])
+q3.app.forecastHandler(resp(mild), null)
+step(q3, 34.0); step(q3, 31.5, 5L * 60000)
+H.check("NC hold-off: not sent immediately", freezePushes(q3).isEmpty() && q3.st.pendingNotify?.freezeAlarm, "${q3.pushes} ${q3.st.pendingNotify}")
+step(q3, 33.0, 10L * 60000); step(q3, 33.0, 25L * 60000)
+H.check("NC hold-off: ALARM blip dropped, never sent as ALARM", !freezePushes(q3).any { it.msg.contains("ALARM") } && q3.st.notifyLog.any { it.contains("DROPPED") }, "${q3.pushes} ${q3.st.notifyLog.take(4)}")
+def q4 = newApp([n_freezeAlarm_holdoff: 30], [freezeDayLog: warmLog.clone(), lastRoutineFreezeAlertTs: T0 - 5L * 86400000])
+q4.app.forecastHandler(resp(mild), null)
+step(q4, 34.0); step(q4, 30.0, 5L * 60000); step(q4, 29.0, 20L * 60000); step(q4, 29.0, 11L * 60000)
+H.check("NC hold-off: still frozen after 30 min -> sent once", freezePushes(q4).size() == 1, "${q4.pushes}")
+// Trajectory fix: falling 6F/hr from 40F -> WARNING (not ALARM) before 32F
+def t1 = newApp([n_freezeWarn_push: true], [freezeDayLog: warmLog.clone(), lastRoutineFreezeAlertTs: T0 - 5L * 86400000])
+t1.app.forecastHandler(resp(mild), null)
+(0..6).each { i -> step(t1, 40.0 - i * 1.0, 10L * 60000) }
+H.check("trajectory fixed: 34F falling 6F/hr -> WARNING (was stuck at 30%)", frState(t1) == "WARNING", "${frState(t1)} ${t1.st.threatMatrix.Freeze.mathEx}")
+H.check("trajectory: predicted freeze never ALARM above 32F", t1.st.threatMatrix.Freeze.prob < 80)
+// Min probability gate (local): freezeWarn at 65% blocked by minProb 80
+def q5 = newApp([n_freezeWarn_minProb: 80, n_freezeWarn_push: true], [freezeDayLog: warmLog.clone(), lastRoutineFreezeAlertTs: T0 - 5L * 86400000])
+q5.app.forecastHandler(resp(mild), null)
+(0..6).each { i -> step(q5, 40.0 - i * 1.0, 10L * 60000) }
+H.check("NC minProb: trajectory WARNING at 75% blocked by minProb 80", !q5.pushes.any { it.msg.contains("WARNING") } && q5.st.notifyLog.any { it.contains("< minimum 80") }, "${q5.pushes} ${q5.st.notifyLog.take(3)}")
+// Source filter: Tornado ALARM from NWS with source=local -> skipped
+def q6 = newApp([enableTornado: true, n_tornadoAlarm_source: "local", sensorWind: null], [noaaAlertsMap: [Tornado: "ALARM"]])
+q6.st.threatMatrix.Tornado = [threat: 0, prob: 0, conf: 0, state: "Clear", howWhy: "", mathEx: "", lastTrig: 0, history: []]
+step(q6, 60.0)
+H.check("NC source filter: NWS-driven Tornado ALARM skipped when Local only", q6.st.threatMatrix.Tornado.state == "ALARM" && !q6.pushes.any { it.msg.contains("Tornado") }, "${q6.st.threatMatrix.Tornado.state} ${q6.pushes}")
+def q7 = newApp([enableTornado: true], [noaaAlertsMap: [Tornado: "ALARM"]])
+q7.st.threatMatrix.Tornado = [threat: 0, prob: 0, conf: 0, state: "Clear", howWhy: "", mathEx: "", lastTrig: 0, history: []]
+step(q7, 60.0)
+H.check("NC: NWS Tornado ALARM pushed by default, details say NWS", q7.pushes.any { it.msg.contains("Tornado ALARM") && it.msg.contains("NWS") }, "${q7.pushes}")
+// Quiet hours 21:00-07:00 block a freeze ALARM at ~21:46
+def q8 = newApp([n_freezeAlarm_quietStart: "2026-11-21T21:00:00.000-0700", n_freezeAlarm_quietEnd: "2026-11-22T07:00:00.000-0700"], [freezeDayLog: warmLog.clone(), lastRoutineFreezeAlertTs: T0 - 5L * 86400000])
+q8.b.setVariable("toDateTime", { String s -> s.length() > 25 ? Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", s) : Date.from(java.time.OffsetDateTime.parse(s).toInstant()) })
+q8.app.forecastHandler(resp(mild), null)
+step(q8, 34.0); step(q8, 30.0, 16L * 60000)
+H.check("NC quiet hours: freeze ALARM skipped", freezePushes(q8).isEmpty() && q8.st.notifyLog.any { it.contains("quiet hours") }, "${q8.pushes} ${q8.st.notifyLog.take(3)}")
+// Daily cap: storms with cooldown 0 and cap 2
+def q9 = newApp([n_freezeAlarm_cooldown: 0, n_freezeAlarm_maxPerDay: 2, freezeHysteresis: 0.0, debounceMins: 1], [freezeDayLog: warmLog.clone(), lastRoutineFreezeAlertTs: T0 - 5L * 86400000])
+q9.app.forecastHandler(resp(mild), null)
+step(q9, 34.0, 1L)
+(1..4).each { step(q9, 31.0, 2L * 60000); step(q9, 33.5, 2L * 60000) }
+H.check("NC daily cap 2: only 2 freeze ALARM pushes from 4 entries", freezePushes(q9).count { it.msg.contains("ALARM") } == 2, "${freezePushes(q9)}")
+// Escalation bypass: Tornado WARNING pushed, then ALARM inside a 60 min ALARM cooldown still alerts
+def r1 = newApp([enableTornado: true, n_tornadoAlarm_cooldown: 60], [noaaAlertsMap: [Tornado: "WARNING"]])
+r1.st.threatMatrix.Tornado = [threat: 0, prob: 0, conf: 0, state: "Clear", howWhy: "", mathEx: "", lastTrig: 0, history: []]
+r1.st.notifyLast = [tornadoAlarm: T0]   // an ALARM went out recently
+step(r1, 60.0)
+r1.st.noaaAlertsMap = [Tornado: "ALARM"]
+step(r1, 60.0)
+H.check("NC escalation: WARNING told -> ALARM skips cooldown", r1.pushes.any { it.msg.contains("Tornado ALARM") }, "${r1.pushes}")
+// Clear 'only if alerted': freeze cleared after a muted episode -> no clear push
+def r2 = newApp([n_freezeClear_push: true, n_freezeClear_muteExpected: false], [freezeDayLog: [true] * 14])
+r2.app.forecastHandler(resp(fcJson), null)
+step(r2, 30.0); step(r2, 36.0, 30L * 60000)
+H.check("NC clear: muted episode -> no 'cleared' push", !r2.pushes.any { it.msg.contains("cleared") }, "${r2.pushes}")
+// Test button
+def r3 = newApp()
+r3.app.appButtonHandler("testNotifyBtn")
+H.check("NC test button sends a push", r3.pushes.any { it.msg.contains("Test from") })
+// Page renders without error (all inputs resolvable)
+def r4 = newApp()
+def inputs = []
+r4.b.setVariable("dynamicPage", { Map pm, Closure pc -> pc() })
+r4.b.setVariable("section", { Object[] sa -> def sc = sa[-1]; if (sc instanceof Closure) sc() })
+r4.b.setVariable("paragraph", { Object[] pa -> })
+r4.b.setVariable("input", { Object[] ia -> inputs << ia.find { it instanceof CharSequence }.toString() })
+r4.app.notificationPage()
+H.check("NC page builds; 24 push toggles present", inputs.count { it.toString().endsWith("_push") } == 24, "${inputs.count { it.toString().endsWith('_push') }}")
+
+["mainPage", "configPage", "dnaConfigPage", "speakerMappingPage"].each { pg ->
+    def err = null
+    try { r4.b.setVariable("href", { Object[] ha -> }); r4.app."${pg}"() } catch (Throwable ex) { err = ex }
+    H.check("page ${pg} renders", err == null, "${err}")
+}
+H.check("no engine errors in any run", ![a, b, b2, c, d, t1, q2, q3, q4, q5, q6, q7, q8, q9, r1, r2, i1, i2, i3, i4, n1, n2, n3, d2, e, f, g, g2, h, h2, k, k2, m].any { it.st.lastEngineError })
 println "\n${H.pass} passed, ${H.fail} failed"
 System.exit(H.fail ? 1 : 0)

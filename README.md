@@ -21,7 +21,7 @@ that installed the package gets the update from HPM.
 
 ## Apps
 
-- **Advanced Severe Weather Detector** – local predictive severe-weather engine with NWS alerts. Fork of Shane Allen's app (originally namespace `ShaneAllen`), now namespace `franktank`; 1.0.0 mutes routine freeze alerts when a freeze is expected from local history or the NWS forecast, and stops freeze ALARM flapping. Off-hub tests: `tests/severe-weather/run_tests.sh`.
+- **Advanced Severe Weather Detector** – local predictive severe-weather engine with NWS alerts. Fork of Shane Allen's app (originally namespace `ShaneAllen`), now namespace `franktank`; 1.0.0 mutes routine freeze alerts when a freeze is expected from local history or the NWS forecast, stops freeze ALARM flapping, and adds a Notification Center (each of 24 notification types on/off with cooldown, hold-off, daily cap, quiet hours, modes, source filter). Off-hub tests: `tests/severe-weather/run_tests.sh`.
 - **Curtain Scheduler** – schedules curtains/blinds per room on sunrise/sunset or fixed times, with presence/event triggers and a keep-closed mode.
 - **Curtain Scheduler Room** – child app: one room controlled by Curtain Scheduler.
 - **Frame Bridge** – publishes selected devices' attributes to the e-paper frame service (blocks credential-like attributes).

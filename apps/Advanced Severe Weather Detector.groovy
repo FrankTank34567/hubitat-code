@@ -29,6 +29,13 @@
  *    Ice Storm products route as ICE. A WARNING-level product no longer
  *    downgrades an ALARM-level one in the same poll.
  *  - Child device globalState ignores routine (non-ice) freeze.
+ *  - Notification Center: every push/TTS/siren/sound is its own notification
+ *    type (WARNING / ALARM / cleared per hazard, Freeze split into routine
+ *    freeze and ice, plus the global all-clear), each with on/off per output,
+ *    text, details, devices, cooldown, escalation bypass, hold-off, daily
+ *    cap, minimum probability, local/NWS source filter, modes and quiet
+ *    hours. Existing per-hazard settings are used as starting values. A
+ *    decision log shows what was sent or skipped and why.
  */
 
 definition(
@@ -51,6 +58,7 @@ preferences {
     page(name: "configPage")
     page(name: "speakerMappingPage")
     page(name: "dnaConfigPage")
+    page(name: "notificationPage")
 }
 
 def renderChartHTML() {
@@ -523,7 +531,8 @@ def mainPage() {
 
         section("<b>System Configuration</b>") {
             href(name: "configPageLink", page: "configPage", title: "▶ Base Hardware & BMS Engine Tuning", description: "Set up local sensors, NOAA Cloud Integration, calibration offsets, DEFCON Watchdog, and advanced physics modules.")
-            href(name: "dnaConfigPageLink", page: "dnaConfigPage", title: "▶ Threat DNA Granular Mapping", description: "Configure Probability thresholds, specific Mode restrictions, Global All-Clear, and custom Audio/Siren routing.")
+            href(name: "notificationPageLink", page: "notificationPage", title: "▶ Notification Center", description: "Every push, spoken announcement, siren and sound, one at a time: on/off, cooldowns, hold-off, daily caps, quiet hours, modes, devices, text.")
+            href(name: "dnaConfigPageLink", page: "dnaConfigPage", title: "▶ Threat DNA Granular Mapping", description: "Engine on/off, probability thresholds, and Warning/Alarm/Ice switches for automations.")
         }
         
         section("<b>Child Device Integration</b>") {
@@ -631,8 +640,6 @@ def configPage() {
                 input "freezeAlertFirstOfSeason", "bool", title: "Still alert the first freeze of the season", defaultValue: true, description: "<i>Plain English: if your station hasn't logged a single freezing day in the last 14, the next freeze alerts once even if it was forecast (time to winterize). Off = mute every expected freeze.</i>"
             }
             input "freezeHysteresis", "decimal", title: "Freeze ALARM clear margin (°F above 32)", defaultValue: 2.0, range: "0..10", description: "<i>Plain English: once a freeze ALARM is on, it stays on until the temperature climbs this far above 32°F. Stops a reading that hovers at 32-33°F from flipping ALARM/WARNING all afternoon. Default 2 (clears at 34°F).</i>"
-            input "iceRealertHours", "number", title: "Ice storm re-alert window (hours)", defaultValue: 6, range: "0..72", description: "<i>Plain English: ice alerts are never muted, but if freezing rain stops and restarts, a repeat ICE ALARM inside this window is logged instead of pushed. Going from ICE WARNING up to ICE ALARM always alerts. 0 = off. Default 6.</i>"
-            input "freezeRealertHours", "number", title: "Routine freeze re-alert window (hours)", defaultValue: 12, range: "0..72", description: "<i>Plain English: after a routine (non-ice) freeze push, more freeze pushes in this window are logged but not sent. One per night instead of one per flap. Ice storms ignore this. 0 = off. Default 12.</i>"
             
             // [SCIENCE: WBGT]
             input "enableWBGT", "bool", title: "Enable Wet-Bulb Globe Temperature (WBGT)", defaultValue: true, description: "Calculates a proxy utilizing Temp, Hum, Wind, and Solar Radiation to measure true heat stress in direct sunlight."
@@ -711,15 +718,6 @@ def speakerMappingPage() {
 def dnaConfigPage() {
     return dynamicPage(name: "dnaConfigPage", title: "<b>Threat DNA Granular Mapping</b>", install: false, uninstall: false) {
         
-        section("<b>✅ Global All-Clear & Stand-Down Sequencer</b>") {
-            paragraph "<i>This sequencer waits until EVERY SINGLE hazard in the matrix reads 'Clear', and verifies that pressure has stabilized and winds have died down before officially broadcasting the all-clear.</i>"
-            input "globalAllClearNotify", "bool", title: "Send Push Notification for Global All-Clear", defaultValue: true
-            input "globalAllClearTTS", "bool", title: "Broadcast TTS for Global All-Clear", defaultValue: true, submitOnChange: true
-            if (settings.globalAllClearTTS) input "ttsGlobalAllClear", "text", title: "All-Clear TTS String", required: false, defaultValue: "The severe weather event has concluded. All clear."
-            input "globalAllClearSound", "bool", title: "Play Sound File / Zooz Chime for All-Clear", defaultValue: false, submitOnChange: true
-            if (settings.globalAllClearSound) input "urlGlobalAllClear", "text", title: "Sound File URL or Chime #", required: true, description: "Enter a URL or valid Chime number (e.g., 5)"
-        }
-        
         def dnas = [
             [id: "Tornado", icon: "🌪️", wTTS: "Warning. Elevated probability of tornado conditions.", aTTS: "Critical Alert. Tornado conditions detected locally.", plain: "Fires when pressure is crashing violently while winds swing direction hard, or when official NWS Tornado Warnings cover your location. WARNING means the ingredients are assembling; ALARM means it is effectively on top of you. Treat ALARMs here as shelter-now events."],
             [id: "Thunderstorm", icon: "⛈️", wTTS: "Warning. Elevated probability of severe thunderstorms.", aTTS: "Critical Alert. Severe thunderstorm conditions actively detected.", plain: "Fires on the gust-front fingerprint (pressure jump + temp crash + wind spike), nearby lightning ramping up or approaching, 58+ mph gusts, or the first drops hitting the piezo rain head. This is your best engine for pop-up summer storms."],
@@ -747,33 +745,12 @@ def dnaConfigPage() {
                         input "switchIceAlarm", "capability.switch", title: "Map ICE STORM / FREEZING RAIN Virtual Switch", required: false, description: "<i>Plain English: freezing rain is a different emergency than a dry hard freeze (glazed roads and power lines vs frozen pipes), so it routes to its own switch when precipitation falls into sub-freezing air.</i>"
                     }
                     
-                    paragraph "<b>▶ Warning Tier Outputs</b> <i style='font-size:11px;'>(the early heads-up)</i>"
-                    input "${lName}WarnNotify", "bool", title: "Send Push Notification", defaultValue: true
-                    input "push${id}Warn", "text", title: "Custom Warning Push Text (optional)", required: false, description: "<i>Leave blank for the default: '⚠ WARNING: Elevated ${prettyName} Conditions.'</i>"
-                    input "${lName}WarnTTS", "bool", title: "Broadcast TTS (Spoken Announcement)", defaultValue: true, submitOnChange: true
-                    if (settings["${lName}WarnTTS"]) input "tts${id}Warn", "text", title: "Warning TTS String", required: false, defaultValue: dna.wTTS
-                    
-                    paragraph "<b>▶ Alarm Tier Outputs</b> <i style='font-size:11px;'>(the act-now alert)</i>"
-                    input "${lName}AlarmNotify", "bool", title: "Send Push Notification", defaultValue: true
-                    input "push${id}Alarm", "text", title: "Custom Alarm Push Text (optional)", required: false, description: "<i>Leave blank for the default: '🚨 CRITICAL: ${prettyName} ALARM Conditions Detected!'</i>"
-                    input "${lName}AlarmTTS", "bool", title: "Broadcast TTS (Spoken Announcement)", defaultValue: true, submitOnChange: true
-                    if (settings["${lName}AlarmTTS"]) input "tts${id}Alarm", "text", title: "Alarm TTS String", required: false, defaultValue: dna.aTTS
-                    input "${lName}AlarmSiren", "bool", title: "Trigger Siren Device", defaultValue: (id == "Tornado" || id == "Thunderstorm")
-                    input "${lName}AlarmSound", "bool", title: "Play Sound File", defaultValue: false, submitOnChange: true
-                    if (settings["${lName}AlarmSound"]) input "url${id}Alarm", "text", title: "Sound File URL or Chime #", required: true
-                    
-                    paragraph "<b>▶ All-Clear & Routing</b>"
-                    input "${lName}ClearNotify", "bool", title: "Push When THIS Hazard Clears", defaultValue: false, description: "<i>Plain English: a per-hazard 'it's over' message. Off by default because the Global All-Clear (top of this page) already announces when the whole event ends.</i>"
-                    if (settings["${lName}ClearNotify"]) input "push${id}Clear", "text", title: "Custom Clear Push Text (optional)", required: false, description: "<i>Leave blank for: '✅ ${prettyName} threat has cleared.'</i>"
-                    input "notify${id}", "capability.notification", title: "Notification Devices for THIS Hazard Only (optional)", multiple: true, required: false, description: "<i>Plain English: leave empty and this hazard uses your master notification devices. Set devices here to route this hazard differently, e.g. Freeze alerts go only to whoever handles the pipes and plants.</i>"
-                    input "${lName}WarnModes", "mode", title: "Only send WARNING alerts in these Modes (optional)", multiple: true, required: false, description: "<i>Plain English: leave empty to alert in every mode. Select modes (e.g. Home, Day) to silence overnight WARNING pushes and announcements while the hub is in Night mode. Switches and automations always fire regardless, and ALARMs have their own separate list below.</i>"
-                    input "${lName}AlarmModes", "mode", title: "Only send ALARM alerts in these Modes (optional)", multiple: true, required: false, description: "<i>Plain English: leave empty (recommended). ALARMs are act-now events; restricting them means sleeping through sirens. Only set this if you are certain.</i>"
+                    paragraph "<i>Pushes, announcements, sirens and sounds for this hazard are set in <b>Notification Center</b> (main page).</i>"
                 }
             }
         }
         section("<b>System-Wide Debounce</b>") {
             input "debounceMins", "number", title: "Safety Hardware Hold Time (Minutes)", required: true, defaultValue: 15
-            input "realertCooldownMins", "number", title: "Same-Hazard Re-Alert Cooldown (Minutes)", defaultValue: 120, description: "<i>Plain English: on a night of scattered storms, cells cross the threshold over and over, and without this you get an identical push for every cell (12:54 AM, 1:35 AM, 3:00 AM...). After the first WARNING push for a hazard, repeats within this window are logged but not pushed; switches and automations still fire every time, and escalation to ALARM always alerts immediately regardless. Set 0 to disable and be pinged for every cell.</i>"
         }
     }
 }
@@ -909,6 +886,7 @@ def initialize() {
 void appButtonHandler(btn) {
     if (btn == "refreshDashboardBtn") return
     if (btn == "createDeviceBtn") { createChildDevice(); return }
+    if (btn == "testNotifyBtn") { sendNotification("🔔 Test from ${app.label}: notifications are working."); notifyLog("SENT test push"); return }
     if (btn == "calibrateNowBtn") {
         logAction("MANUAL: On-demand calibration pull requested.")
         pollAutoCal()
@@ -951,6 +929,13 @@ void appButtonHandler(btn) {
         state.remove("todayMinTemp")
         state.remove("establishedWinter")
         state.remove("freezeExpected")
+        state.remove("notifyLog")
+        state.remove("notifyLast")
+        state.remove("notifyDay")
+        state.remove("famAlarmTs")
+        state.remove("famWarnTs")
+        state.remove("pendingNotify")
+        state.remove("globalEventAlerted")
         state.remove("freezeExpectedReason")
         state.remove("freezeForecast")
         state.remove("forecastUrl")
@@ -2388,16 +2373,25 @@ def doEvaluateMatrix() {
             frProb = 100
             frMath += "&nbsp;↳ Holding Freeze ALARM until ${String.format('%.1f', frClearAt)}° (clear margin): 100%<br>"
         } else if (t <= 40.0 && tTrendData.rate < 0) {
-            def dropRate = Math.abs(tTrendData.rate > 0.1 ? tTrendData.rate : 0.1)
+            // BUG FIX (fork 1.0.0): was abs(rate > 0.1 ? rate : 0.1). For a falling
+            // temperature rate is negative, so dropRate was always 0.1F/hr and the
+            // trajectory never left the ">4 hrs: 30%" branch.
+            def dropRate = Math.max(Math.abs(tTrendData.rate as Double), 0.1)
             def hoursToFreeze = (t - 32.0) / dropRate
             frMath += "&nbsp;↳ PREDICTIVE: Est Time to 32°: ${String.format('%.1f', hoursToFreeze)} hrs<br>"
-            if (hoursToFreeze <= 2.0) { frProb = 90; frMath += "&nbsp;&nbsp;&nbsp;↳ < 2hrs: +90.0%<br>" }
+            if (hoursToFreeze <= 2.0) { frProb = 75; frMath += "&nbsp;&nbsp;&nbsp;↳ < 2hrs: +75.0% (WARNING tier)<br>" }
             else if (hoursToFreeze <= 4.0) { frProb = 65; frMath += "&nbsp;&nbsp;&nbsp;↳ < 4hrs: +65.0%<br>" }
             else { frProb = 30; frMath += "&nbsp;&nbsp;&nbsp;↳ > 4hrs: +30.0%<br>" }
         } else {
              frMath += "&nbsp;↳ Trajectory Safe.<br>"
         }
         
+        // A prediction (or the TAF nudge) above 32F is a WARNING, never an ALARM:
+        // ALARM means it is actually freezing (or the hysteresis hold).
+        if (!isIceStorm && t > 32.0 && !(frHoldAlarm && t < frClearAt)) {
+            def aCap = ((settings.freezeAlarmThresh ?: 80) as Integer) - 1
+            if (frProb > aCap) frProb = aCap
+        }
         frProb = Math.round(frProb)
         if (frProb > 100) frProb = 100
         frThreat = Math.round(frThreat)
@@ -2675,9 +2669,8 @@ def doEvaluateMatrix() {
             state.globalThreatActive = false
             state.globalAllClearPending = false
             
-            if (settings.globalAllClearNotify) sendNotification("✅ Weather All-Clear: All severe weather threats have passed.")
-            if (settings.globalAllClearTTS) playAudio(settings.ttsGlobalAllClear ?: "The severe weather event has concluded. All clear.")
-            if (settings.globalAllClearSound) playSoundFile(settings.urlGlobalAllClear)
+            dispatchNotification("allClear", [haz: null, from: "event", to: "Clear"])
+            state.globalEventAlerted = false
         } else {
             if (!state.globalAllClearPending) {
                 logAction("⏳ STAND-DOWN PENDING: Matrix cleared, but waiting for barometric/kinetic stabilization to officially broadcast all-clear.")
@@ -2701,6 +2694,7 @@ def doEvaluateMatrix() {
         state.watchdogActive = false
     }
 
+    flushPendingNotifications()
     state.lastEvalDuration = now() - evalStart
     updateChildDevice()
 }
@@ -2731,6 +2725,7 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
         targetState = targetState == "ALARM" ? "ICE ALARM" : "ICE WARNING"
     }
     
+    def localTarget = targetState
     if (settings.enableNOAA && settings.noaaTriggersHardware) {
         def noaaMap = state.noaaAlertsMap ?: [:]
         def officialStatus = noaaMap[haz] ?: "Clear"
@@ -2784,38 +2779,10 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
         }
         data.currentEvent = [state: targetState, start: now()]
 
-        def warnAllowedModes = settings["${pfx}WarnModes"]
-        def warnModeOk = (!warnAllowedModes || warnAllowedModes.contains(location.mode))
-        
-        def alarmAllowedModes = settings["${pfx}AlarmModes"]
-        def alarmModeOk = (!alarmAllowedModes || alarmAllowedModes.contains(location.mode))
-        
-        // SEASONAL WINTER MUTE: when 10+ of the last 14 days hit freezing,
-        // this location is in established winter and routine freeze alerts
-        // are noise (pipes/sprinklers long since winterized). Switches still
-        // operate for automations; only human alerts are muted. ICE storms
-        // (freezing rain) are dangerous regardless of season: never muted.
-        // The first freeze of autumn always alerts, because the 14-day log
-        // can't reach 10 freezes until winter is genuinely established.
-        // Fork 1.0.0: "expected" now comes from computeFreezeExpectation()
-        // (local N-of-7 log OR NWS forecast low), not only 10-of-14.
-        def routineFreeze = (haz == "Freeze" && !targetState.contains("ICE"))
-        def seasonalMute = (routineFreeze && state.freezeExpected == true && settings.seasonalFreezeAuto != false)
-        if (seasonalMute) {
-            warnModeOk = false
-            alarmModeOk = false
-            logAction("❄️ Freeze ${targetState}: expected (${state.freezeExpectedReason ?: 'learned'}), push/TTS muted. Switches still updated.")
-        }
-        def freezeCoolMs = ((settings.freezeRealertHours != null ? settings.freezeRealertHours : 12) as Integer) * 3600000L
-        // Ice is never muted, but a repeat ICE ALARM inside this window (ice
-        // showers flapping on and off) is logged instead of pushed. Escalating
-        // from ICE WARNING to ICE ALARM always alerts.
-        def iceEntry = (haz == "Freeze" && targetState.contains("ICE"))
-        def iceCoolMs = ((settings.iceRealertHours != null ? settings.iceRealertHours : 6) as Integer) * 3600000L
-        
         def warnSw = settings["switch${haz}Warn"]
         def alarmSw = settings["switch${haz}Alarm"]
         
+        // Switches/automations: always follow the state (never muted).
         if (targetState.contains("ALARM")) {
             if (haz == "Freeze" && isIceStorm && settings.switchIceAlarm) {
                 safeOn(settings.switchIceAlarm)
@@ -2825,85 +2792,26 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
                 if (haz == "Freeze" && settings.switchIceAlarm) safeOff(settings.switchIceAlarm)
             }
             safeOff(warnSw)
-            
-            def lastAlarmOut = data.lastAlarmNotifyTs ?: 0
-            def lastIceOut = data.lastIceAlarmNotifyTs ?: 0
-            if (alarmModeOk && routineFreeze && freezeCoolMs > 0 && (now() - lastAlarmOut) < freezeCoolMs) {
-                def minsLeft = Math.ceil((freezeCoolMs - (now() - lastAlarmOut)) / 60000).toInteger()
-                logAction("Freeze ALARM repeat within the routine freeze re-alert window (${minsLeft} min left); push/TTS suppressed, switches updated.")
-            } else if (alarmModeOk && iceEntry && currentState != "ICE WARNING" && iceCoolMs > 0 && (now() - lastIceOut) < iceCoolMs) {
-                def minsLeft = Math.ceil((iceCoolMs - (now() - lastIceOut)) / 60000).toInteger()
-                logAction("ICE ALARM repeat within the ice re-alert window (${minsLeft} min left); push/TTS suppressed, ice switch updated.")
-            } else if (alarmModeOk) {
-                data.lastAlarmNotifyTs = now()
-                if (iceEntry) data.lastIceAlarmNotifyTs = now()
-                if (routineFreeze) state.lastRoutineFreezeAlertTs = now()
-                if (settings["${pfx}AlarmNotify"]) {
-                    def defAlarmMsg = "🚨 CRITICAL: ${targetState == 'ICE ALARM' ? 'ICE STORM' : haz} ALARM Conditions Detected!"
-                    sendNotification(settings["push${haz}Alarm"] ?: defAlarmMsg, settings["notify${haz}"])
-                }
-                if (settings["${pfx}AlarmTTS"]) playAudio(settings["tts${haz}Alarm"])
-                if (settings["${pfx}AlarmSiren"]) triggerSiren()
-                if (settings["${pfx}AlarmSound"]) playSoundFile(settings["url${haz}Alarm"])
-            } else {
-                if (!seasonalMute) logAction("Alarm audio/push suppressed due to Mode Restriction.")
-            }
-            
         } else if (targetState.contains("WARNING")) {
             safeOff(alarmSw)
             if (haz == "Freeze" && settings.switchIceAlarm) safeOff(settings.switchIceAlarm)
             safeOn(warnSw)
-            
-            if (warnModeOk) {
-                // EPISODE COOLDOWN: scattered storms arrive as trains of cells;
-                // the hazard flaps WARNING->Clear->WARNING all night and each
-                // round trip pushed a phone alert (3 identical pings between
-                // 12:54 and 3:00 AM, 7/14/26). Repeats inside the window are
-                // logged and switches still fire, but humans are pinged once.
-                // Escalation to ALARM is never cooled down.
-                def cooldownMs = ((settings.realertCooldownMins != null ? settings.realertCooldownMins : 120) as Integer) * 60000L
-                def lastWarnPush = data.lastWarnNotifyTs ?: 0
-                if (routineFreeze) {
-                    // A routine freeze WARNING right after a freeze ALARM (or
-                    // another WARNING) in the window is a step-down/flap, not news.
-                    cooldownMs = Math.max(cooldownMs, freezeCoolMs)
-                    lastWarnPush = Math.max(lastWarnPush as Long, (data.lastAlarmNotifyTs ?: 0) as Long)
-                } else if (iceEntry) {
-                    // ICE WARNING after an ICE ALARM, or a repeat, inside the ice window.
-                    cooldownMs = Math.max(cooldownMs, iceCoolMs)
-                    lastWarnPush = Math.max(lastWarnPush as Long, (data.lastIceAlarmNotifyTs ?: 0) as Long)
-                }
-                if (cooldownMs <= 0 || (now() - lastWarnPush) >= cooldownMs) {
-                    if (routineFreeze && (settings["${pfx}WarnNotify"] || settings["${pfx}WarnTTS"])) state.lastRoutineFreezeAlertTs = now()
-                    if (settings["${pfx}WarnNotify"]) {
-                        def defWarnMsg = "⚠ WARNING: Elevated ${targetState == 'ICE WARNING' ? 'Freezing Rain/Ice' : haz} Conditions."
-                        sendNotification(settings["push${haz}Warn"] ?: defWarnMsg, settings["notify${haz}"])
-                        data.lastWarnNotifyTs = now()
-                    }
-                    if (settings["${pfx}WarnTTS"]) playAudio(settings["tts${haz}Warn"])
-                    if (settings["${pfx}WarnSiren"]) triggerSiren()
-                    if (settings["${pfx}WarnSound"]) playSoundFile(settings["url${haz}Warn"])
-                } else {
-                    def minsLeft = Math.ceil((cooldownMs - (now() - lastWarnPush)) / 60000).toInteger()
-                    logAction("${haz} re-entered WARNING within the episode cooldown (${minsLeft} min remaining); push/TTS suppressed as a repeat, switches updated. Escalation to ALARM would still alert immediately.")
-                }
-            } else {
-                if (!seasonalMute) logAction("Warning audio/push suppressed due to Mode Restriction.")
-            }
-            
         } else {
             safeOff(alarmSw)
             safeOff(warnSw)
             if (haz == "Freeze" && settings.switchIceAlarm) safeOff(settings.switchIceAlarm)
-            if (currentState != "Clear") {
-                stopAllSirens()
-                // Per-hazard all-clear push (optional, off by default; the
-                // Global All-Clear sequencer still handles the whole-event message)
-                if (settings["${pfx}ClearNotify"] && !seasonalMute) {
-                    sendNotification(settings["push${haz}Clear"] ?: "✅ ${haz} threat has cleared.", settings["notify${haz}"])
-                }
-            }
+            if (currentState != "Clear") stopAllSirens()
         }
+        
+        // Humans: one dispatcher, one notification type per transition
+        // (see NOTIFICATION CENTER). Freeze splits into routine freeze and ice.
+        def evKey = null
+        if (targetState == "Clear") evKey = (currentState == "Clear") ? null : (haz == "Freeze" ? "freezeClear" : "${pfx}Clear")
+        else if (haz == "Freeze") evKey = (targetState.contains("ICE") ? "ice" : "freeze") + (targetState.contains("ALARM") ? "Alarm" : "Warn")
+        else evKey = pfx + (targetState.contains("ALARM") ? "Alarm" : "Warn")
+        def source = (targetState != localTarget) ? "NWS" : "Local"
+        if (evKey) dispatchNotification(evKey, [haz: haz, prob: prob, conf: conf, source: source, from: currentState, to: targetState, wasIce: currentState.contains("ICE"), data: data])
+        if (targetState == "Clear") data.episodeAlerted = false
     }
     
     data.threat = threat
@@ -2915,6 +2823,300 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
     
     matrix[haz] = data
     state.threatMatrix = matrix
+}
+
+// ==============================================================================
+// NOTIFICATION CENTER (fork 1.0.0)
+// Every human-facing output (push, TTS, siren, sound) goes through one
+// dispatcher, keyed by an individual notification type. Each type has its
+// own on/off switches and tuning. Switches/automations are NOT affected by
+// any of this; they always follow the hazard state.
+// Settings are n_<key>_<field>. When a new setting is unset, the old
+// per-hazard setting (pre-fork name) is used, so existing configs carry over.
+// ==============================================================================
+def dnaTtsDefaults() {
+    return [
+        Tornado: ["Warning. Elevated probability of tornado conditions.", "Critical Alert. Tornado conditions detected locally."],
+        Thunderstorm: ["Warning. Elevated probability of severe thunderstorms.", "Critical Alert. Severe thunderstorm conditions actively detected."],
+        Flood: ["Warning. Elevated probability of flash flood conditions.", "Critical Alert. Flash flood conditions detected locally."],
+        Freeze: ["Warning. Rapid trajectory towards freeze detected.", "Alert. Freeze conditions actively occurring."],
+        SevereHeat: ["Warning. High heat index detected. Caution advised.", "Critical Alert. Severe heat index conditions detected locally."],
+        Tropical: ["Warning. Tropical cyclone signatures detected.", "Critical Alert. Deep tropical cyclone conditions actively impacting location."],
+        FireWeather: ["Warning. Elevated fire weather conditions.", "Critical Alert. Extreme Red Flag fire weather actively detected. No outdoor sparks."]
+    ]
+}
+
+def prettyHaz(id) { return id == 'SevereHeat' ? 'Severe Heat' : (id == 'FireWeather' ? 'Fire Weather' : id) }
+
+def notifyEvents() {
+    def tts = dnaTtsDefaults()
+    def warnCd = (settings.realertCooldownMins != null ? settings.realertCooldownMins : 120) as Integer
+    def evs = []
+    ["Tornado", "Thunderstorm", "Flood", "SevereHeat", "Tropical", "FireWeather"].each { id ->
+        def p = id.toLowerCase(); def nm = prettyHaz(id)
+        evs << [key: "${p}Warn", haz: id, tier: "WARNING", fam: p, group: id, label: "${nm} WARNING",
+                hint: "Early heads-up: ingredients assembling.",
+                legacy: [push: "${p}WarnNotify", text: "push${id}Warn", tts: "${p}WarnTTS", ttsText: "tts${id}Warn", modes: "${p}WarnModes", devices: "notify${id}"],
+                defaults: [push: true, tts: true, ttsText: tts[id][0], cooldown: warnCd, holdoff: 0, maxPerDay: 0, details: true, source: "any"],
+                text: "⚠ WARNING: Elevated ${nm} Conditions."]
+        evs << [key: "${p}Alarm", haz: id, tier: "ALARM", fam: p, group: id, label: "${nm} ALARM",
+                hint: "Act-now alert.",
+                legacy: [push: "${p}AlarmNotify", text: "push${id}Alarm", tts: "${p}AlarmTTS", ttsText: "tts${id}Alarm", siren: "${p}AlarmSiren", sound: "${p}AlarmSound", soundUrl: "url${id}Alarm", modes: "${p}AlarmModes", devices: "notify${id}"],
+                defaults: [push: true, tts: true, ttsText: tts[id][1], siren: (id == "Tornado" || id == "Thunderstorm"), sound: false, cooldown: 0, holdoff: 0, maxPerDay: 0, details: true, escalate: true, source: "any"],
+                text: "🚨 CRITICAL: ${nm} ALARM Conditions Detected!"]
+        evs << [key: "${p}Clear", haz: id, tier: "Clear", fam: p, group: id, label: "${nm} cleared",
+                hint: "'It's over' message for this hazard.",
+                legacy: [push: "${p}ClearNotify", text: "push${id}Clear", devices: "notify${id}"],
+                defaults: [push: false, tts: false, cooldown: 0, holdoff: 0, maxPerDay: 0, details: false, onlyIfAlerted: true],
+                text: "✅ ${nm} threat has cleared."]
+    }
+    // Freeze splits into routine freeze and ice, which behave very differently.
+    def fz = [push: "freezeWarnNotify", text: "pushFreezeWarn", tts: "freezeWarnTTS", ttsText: "ttsFreezeWarn", modes: "freezeWarnModes", devices: "notifyFreeze"]
+    def fa = [push: "freezeAlarmNotify", text: "pushFreezeAlarm", tts: "freezeAlarmTTS", ttsText: "ttsFreezeAlarm", siren: "freezeAlarmSiren", sound: "freezeAlarmSound", soundUrl: "urlFreezeAlarm", modes: "freezeAlarmModes", devices: "notifyFreeze"]
+    evs << [key: "freezeWarn", haz: "Freeze", tier: "WARNING", fam: "freeze", group: "Freeze", label: "Freeze WARNING (heading for 32°F)",
+            hint: "Temperature trending toward freezing within hours, or an NWS Freeze Watch / Frost Advisory.",
+            legacy: fz, defaults: [push: true, tts: true, ttsText: tts.Freeze[0], cooldown: 720, holdoff: 0, maxPerDay: 1, details: true, muteExpected: true, source: "any"],
+            text: "⚠ WARNING: Freeze likely within hours."]
+    evs << [key: "freezeAlarm", haz: "Freeze", tier: "ALARM", fam: "freeze", group: "Freeze", label: "Freeze ALARM (at/below 32°F)",
+            hint: "Hard freeze happening now, or an NWS Freeze Warning.",
+            legacy: fa, defaults: [push: true, tts: true, ttsText: tts.Freeze[1], siren: false, sound: false, cooldown: 720, holdoff: 0, maxPerDay: 1, details: true, muteExpected: true, escalate: false, source: "any"],
+            text: "🚨 Freeze ALARM: at or below 32°F."]
+    evs << [key: "iceWarn", haz: "Freeze", tier: "WARNING", fam: "ice", group: "Freeze", label: "ICE WARNING (possible freezing rain)",
+            hint: "Precipitation into sub-freezing air that no forecast/official product confirms (could be wet snow), or an NWS ice advisory. Never muted by the expected-freeze logic.",
+            legacy: fz, defaults: [push: true, tts: false, ttsText: "Warning. Possible freezing rain.", cooldown: 360, holdoff: 0, maxPerDay: 0, details: true, source: "any"],
+            text: "⚠ WARNING: Possible freezing rain / ice."]
+    evs << [key: "iceAlarm", haz: "Freeze", tier: "ALARM", fam: "ice", group: "Freeze", label: "ICE STORM ALARM (freezing rain)",
+            hint: "Freezing rain confirmed by TAF, NWS forecast or an NWS ice product. Never muted by the expected-freeze logic.",
+            legacy: fa, defaults: [push: true, tts: true, ttsText: "Critical alert. Freezing rain. Ice accumulating.", siren: false, sound: false, cooldown: 360, holdoff: 0, maxPerDay: 0, details: true, escalate: true, source: "any"],
+            text: "🚨 CRITICAL: ICE STORM ALARM Conditions Detected!"]
+    evs << [key: "freezeClear", haz: "Freeze", tier: "Clear", fam: "freeze", group: "Freeze", label: "Freeze / ice cleared",
+            hint: "Back above freezing / ice ended.",
+            legacy: [push: "freezeClearNotify", text: "pushFreezeClear", devices: "notifyFreeze"],
+            defaults: [push: false, tts: false, cooldown: 0, holdoff: 0, maxPerDay: 0, details: false, onlyIfAlerted: true, muteExpected: true],
+            text: "✅ Freeze threat has cleared."]
+    evs << [key: "allClear", haz: null, tier: "AllClear", fam: "global", group: "Global", label: "Global all-clear (whole event over)",
+            hint: "Every hazard Clear, pressure stabilising and wind under 15 mph. A routine freeze does not count as an event.",
+            legacy: [push: "globalAllClearNotify", tts: "globalAllClearTTS", ttsText: "ttsGlobalAllClear", sound: "globalAllClearSound", soundUrl: "urlGlobalAllClear"],
+            defaults: [push: true, tts: true, ttsText: "The severe weather event has concluded. All clear.", sound: false, cooldown: 0, maxPerDay: 0, details: false, onlyIfAlerted: true],
+            text: "✅ Weather All-Clear: All severe weather threats have passed."]
+    return evs
+}
+
+def notifyEvent(key) { return notifyEvents().find { it.key == key } }
+
+// Resolve one setting: new n_ setting, else legacy setting, else default.
+def nSet(ev, field) {
+    def v = settings["n_${ev.key}_${field}"]
+    if (v != null && v != "") return v
+    def lk = ev.legacy?.get(field)
+    if (lk) {
+        def lv = settings[lk]
+        if (lv != null && lv != "") return lv
+    }
+    return ev.defaults?.get(field)
+}
+
+def nInt(ev, field) {
+    def v = nSet(ev, field)
+    if (v == null || v == "") return 0
+    try { return (v as BigDecimal).intValue() } catch (e) { return 0 }
+}
+
+def nBool(ev, field) { return nSet(ev, field) == true || nSet(ev, field) == "true" }
+
+def notifyLog(String line) {
+    def h = state.notifyLog ?: []
+    h.add(0, "[${new Date().format('MM/dd hh:mm a', location.timeZone)}] ${line}")
+    if (h.size() > 40) h = h[0..39]
+    state.notifyLog = h
+}
+
+def mapGet(name, k) { return ((state[name] ?: [:])[k] ?: 0) as Long }
+def mapPut(name, k, v) { def m = state[name] ?: [:]; m[k] = v; state[name] = m }
+
+// ctx: haz, prob, conf, source ("Local"/"NWS"), from, to, wasIce, data (hazard matrix entry, mutable)
+def dispatchNotification(String key, Map ctx) {
+    def ev = notifyEvent(key)
+    if (!ev) return
+    def outs = []
+    if (nBool(ev, "push")) outs << "push"
+    if (nBool(ev, "tts")) outs << "TTS"
+    if (ev.tier in ["ALARM"] && nBool(ev, "siren")) outs << "siren"
+    if (ev.tier in ["ALARM", "AllClear"] && nBool(ev, "sound")) outs << "sound"
+    
+    // A new transition replaces anything still held for this hazard.
+    if (ctx.haz && !ctx.fromPending) {
+        def pend = state.pendingNotify ?: [:]
+        def stale = pend.findAll { k, p -> p.haz == ctx.haz }.keySet().toList()
+        stale.each { k -> pend.remove(k); notifyLog("DROPPED held ${k}: ${ctx.haz} moved on to ${ctx.to}") }
+        state.pendingNotify = pend
+    }
+    if (!outs) { notifyLog("OFF ${ev.label}: no outputs enabled"); return }
+    
+    def skip = { String why -> notifyLog("SKIPPED ${ev.label}: ${why}") }
+    
+    def src = nSet(ev, "source") ?: "any"
+    if (ctx.source && src == "local" && ctx.source == "NWS") { skip("source filter is Local only (this came from NWS)"); return }
+    if (ctx.source && src == "nws" && ctx.source != "NWS") { skip("source filter is NWS only (this was local)"); return }
+    
+    def minProb = nInt(ev, "minProb")
+    if (minProb > 0 && ctx.source != "NWS" && ctx.prob != null && ctx.prob < minProb) { skip("probability ${ctx.prob}% < minimum ${minProb}%"); return }
+    
+    if (ev.defaults.containsKey("muteExpected") && !ctx.wasIce && nBool(ev, "muteExpected") && state.freezeExpected == true && settings.seasonalFreezeAuto != false) {
+        skip("freeze expected (${state.freezeExpectedReason ?: 'learned'})"); return
+    }
+    
+    if (ev.defaults.containsKey("onlyIfAlerted") && nBool(ev, "onlyIfAlerted")) {
+        def alerted = (ev.tier == "AllClear") ? (state.globalEventAlerted == true) : (ctx.data?.episodeAlerted == true)
+        if (!alerted) { skip("nothing was announced for this episode"); return }
+    }
+    
+    def modes = nSet(ev, "modes")
+    if (modes && !(modes.contains(location.mode))) { skip("mode ${location.mode} not in allowed modes"); return }
+    
+    // Quiet hours (optional, per notification)
+    def qs = nSet(ev, "quietStart"); def qe = nSet(ev, "quietEnd")
+    if (qs && qe) {
+        try {
+            if (timeOfDayIsBetween(toDateTime(qs), toDateTime(qe), new Date(), location.timeZone)) { skip("quiet hours"); return }
+        } catch (e) {}
+    }
+    
+    def cdMs = nInt(ev, "cooldown") * 60000L
+    if (cdMs > 0) {
+        def last = mapGet("notifyLast", ev.key)
+        // A WARNING right after an ALARM of the same family is a step-down, not news.
+        if (ev.tier == "WARNING") last = Math.max(last, mapGet("famAlarmTs", ev.fam))
+        // Ice ending into a plain freeze is a step-down too.
+        if (ev.fam == "freeze" && ctx.wasIce) last = Math.max(last, mapGet("famAlarmTs", "ice"))
+        def fromWarn = (ctx.from == (ev.fam == "ice" ? "ICE WARNING" : "WARNING"))
+        def escalation = (ev.tier == "ALARM" && nBool(ev, "escalate") && fromWarn && mapGet("famWarnTs", ev.fam) > mapGet("famAlarmTs", ev.fam))
+        if (!escalation && (now() - last) < cdMs) {
+            skip("re-alert cooldown, ${Math.ceil((cdMs - (now() - last)) / 60000).toInteger()} min left"); return
+        }
+    }
+    
+    def cap = nInt(ev, "maxPerDay")
+    def today = new Date(now()).format("yyyy-MM-dd", location.timeZone)
+    def day = state.notifyDay ?: [:]
+    if (day.date != today) day = [date: today, counts: [:]]
+    def sentToday = (day.counts[ev.key] ?: 0) as Integer
+    if (cap > 0 && sentToday >= cap) { skip("daily cap ${cap} reached"); return }
+    
+    def hold = nInt(ev, "holdoff")
+    if (hold > 0 && !ctx.fromPending && ev.tier != "AllClear") {
+        def pend = state.pendingNotify ?: [:]
+        pend[ev.key] = [key: ev.key, haz: ctx.haz, to: ctx.to, due: now() + hold * 60000L, prob: ctx.prob, conf: ctx.conf, source: ctx.source, from: ctx.from, wasIce: ctx.wasIce]
+        state.pendingNotify = pend
+        notifyLog("HELD ${ev.label} for ${hold} min (sent only if still ${ctx.to})")
+        return
+    }
+    
+    // ---- deliver ----
+    def msg = nSet(ev, "text") ?: ev.text
+    if (nBool(ev, "details")) {
+        def bits = []
+        if (ctx.prob != null && ev.tier in ["WARNING", "ALARM"]) bits << "prob ${ctx.prob}%"
+        if (ctx.haz == "Freeze") {
+            def tNow = getFloat(sensorTemp, ["temperature", "tempf"], null)
+            if (tNow != null) bits << "${String.format('%.1f', tNow as Double)}°F"
+        }
+        if (ctx.source) bits << (ctx.source == "NWS" ? "NWS" : "local sensors")
+        if (bits) msg += " (" + bits.join(", ") + ")"
+    }
+    if ("push" in outs) {
+        def devs = nSet(ev, "devices")
+        sendNotification(msg, devs ?: null)
+    }
+    if ("TTS" in outs) playAudio(nSet(ev, "ttsText") ?: msg)
+    if ("siren" in outs) triggerSiren()
+    if ("sound" in outs) playSoundFile(nSet(ev, "soundUrl"))
+    
+    mapPut("notifyLast", ev.key, now())
+    if (ev.tier == "ALARM") mapPut("famAlarmTs", ev.fam, now())
+    if (ev.tier == "WARNING") mapPut("famWarnTs", ev.fam, now())
+    day.counts[ev.key] = sentToday + 1
+    state.notifyDay = day
+    if (ctx.data != null && ev.tier in ["WARNING", "ALARM"]) ctx.data.episodeAlerted = true
+    if (ev.fam == "freeze" && ev.tier in ["WARNING", "ALARM"]) state.lastRoutineFreezeAlertTs = now()
+    if (ev.fam != "freeze" && ev.tier in ["WARNING", "ALARM"]) state.globalEventAlerted = true
+    notifyLog("SENT ${ev.label} via ${outs.join('+')}: ${msg}")
+}
+
+// Held notifications go out only if the hazard is still in the same state.
+def flushPendingNotifications() {
+    def pend = state.pendingNotify ?: [:]
+    if (!pend) return
+    def m = state.threatMatrix ?: [:]
+    def done = []
+    pend.each { k, p ->
+        if (now() < (p.due as Long)) return
+        done << k
+        def cur = m[p.haz]?.state
+        if (cur == p.to) {
+            dispatchNotification(k, [haz: p.haz, prob: m[p.haz]?.prob, conf: m[p.haz]?.conf, source: p.source, from: p.from, to: p.to, wasIce: p.wasIce, data: m[p.haz], fromPending: true])
+        } else {
+            notifyLog("DROPPED held ${k}: ${p.haz} is now ${cur}")
+        }
+    }
+    def pend2 = state.pendingNotify ?: [:]
+    done.each { pend2.remove(it) }
+    state.pendingNotify = pend2
+    state.threatMatrix = m
+}
+
+def notificationPage() {
+    return dynamicPage(name: "notificationPage", title: "<b>Notification Center</b>", install: false, uninstall: false) {
+        section() {
+            paragraph "<div style='font-size:13px; color:#333;'>Every push, spoken announcement, siren and sound this app can send, one row each. Switch each one on/off and tune it. <b>Switches and automations are not affected</b>; they always follow the hazard state. Settings start from your previous per-hazard choices.</div>"
+            input "realertCooldownMins", "number", title: "Default WARNING re-alert cooldown (minutes)", defaultValue: 120, description: "<i>Starting value for every WARNING row's cooldown that you haven't set yourself.</i>"
+            if (app.id) input "testNotifyBtn", "button", title: "🔔 Send a test push to the master notification devices"
+        }
+        section("<b>Recent notification decisions</b>", hideable: true, hidden: true) {
+            def h = state.notifyLog ?: []
+            paragraph h ? "<div style='font-family:monospace; font-size:11px; line-height:1.5;'>" + h.collect { escapeHtml(it) }.join("<br>") + "</div>" : "<i>Nothing yet.</i>"
+        }
+        def groups = [["Tornado", "🌪️"], ["Thunderstorm", "⛈️"], ["Flood", "🌊"], ["Freeze", "❄️"], ["SevereHeat", "🔥"], ["Tropical", "🌀"], ["FireWeather", "🔥🌲"], ["Global", "✅"]]
+        def evs = notifyEvents()
+        groups.each { g ->
+            def gid = g[0]
+            def gEvs = evs.findAll { it.group == gid }
+            def onCount = gEvs.count { e -> nBool(e, "push") || nBool(e, "tts") }
+            section("<b>${g[1]} ${gid == 'Global' ? 'Global' : prettyHaz(gid)}</b> <span style='font-size:11px; color:#777;'>(${onCount} of ${gEvs.size()} on)</span>", hideable: true, hidden: true) {
+                gEvs.each { ev -> notificationRow(ev) }
+            }
+        }
+    }
+}
+
+def notificationRow(ev) {
+    def k = "n_${ev.key}_"
+    def hasNws = (ev.haz != null && ev.tier in ["WARNING", "ALARM"])
+    paragraph "<div style='margin-top:8px; padding:6px 8px; background:#f2f4f7; border-left:4px solid ${ev.tier == 'ALARM' ? '#d9534f' : (ev.tier == 'WARNING' ? '#f0ad4e' : '#5cb85c')}; font-size:13px;'><b>${ev.label}</b><br><span style='font-size:11px; color:#555;'>${ev.hint}</span></div>"
+    input "${k}push", "bool", title: "Push notification", defaultValue: nBool(ev, "push"), submitOnChange: true
+    input "${k}tts", "bool", title: "Spoken announcement (TTS)", defaultValue: nBool(ev, "tts"), submitOnChange: true
+    if (ev.tier == "ALARM") input "${k}siren", "bool", title: "Siren", defaultValue: nBool(ev, "siren")
+    if (ev.tier in ["ALARM", "AllClear"]) input "${k}sound", "bool", title: "Sound file / chime", defaultValue: nBool(ev, "sound"), submitOnChange: true
+    def anyOn = nBool(ev, "push") || nBool(ev, "tts") || (ev.tier == "ALARM" && nBool(ev, "siren")) || nBool(ev, "sound")
+    if (!anyOn) return
+    if (nBool(ev, "push")) {
+        input "${k}text", "text", title: "Push text (blank = default)", required: false, description: "<i>Default: ${ev.text}</i>"
+        input "${k}details", "bool", title: "Add details to the push (probability, temperature, local vs NWS)", defaultValue: nBool(ev, "details")
+        input "${k}devices", "capability.notification", title: "Send to these devices instead of the usual ones (optional)", multiple: true, required: false
+    }
+    if (nBool(ev, "tts")) input "${k}ttsText", "text", title: "Spoken text", required: false, defaultValue: nSet(ev, "ttsText")
+    if (ev.tier in ["ALARM", "AllClear"] && nBool(ev, "sound")) input "${k}soundUrl", "text", title: "Sound file URL or chime #", required: false, defaultValue: nSet(ev, "soundUrl")
+    input "${k}cooldown", "number", title: "Re-alert cooldown (minutes, 0 = none)", defaultValue: nInt(ev, "cooldown"), range: "0..10080", description: "<i>Repeats of this notification inside this window are logged, not sent.${ev.tier == 'WARNING' ? ' Also counts from the last ALARM of the same hazard, so an ALARM stepping down to WARNING is quiet.' : ''}</i>"
+    if (ev.tier == "ALARM") input "${k}escalate", "bool", title: "Escalation from a WARNING you were told about skips the cooldown", defaultValue: nBool(ev, "escalate")
+    if (ev.tier != "AllClear") input "${k}holdoff", "number", title: "Hold-off (minutes, 0 = send immediately)", defaultValue: nInt(ev, "holdoff"), range: "0..240", description: "<i>Wait this long and send only if the hazard is still in this state. Filters short blips.</i>"
+    input "${k}maxPerDay", "number", title: "Max per day (0 = unlimited)", defaultValue: nInt(ev, "maxPerDay"), range: "0..100"
+    if (ev.tier in ["WARNING", "ALARM"]) input "${k}minProb", "number", title: "Only if probability at least (%, blank = any)", required: false, range: "0..100", description: "<i>Applies to local detections. NWS-triggered states always pass.</i>"
+    if (hasNws) input "${k}source", "enum", title: "Trigger source", options: ["any": "Local sensors or NWS", "local": "Local sensors only", "nws": "NWS only"], defaultValue: nSet(ev, "source") ?: "any"
+    if (ev.defaults.containsKey("muteExpected")) input "${k}muteExpected", "bool", title: "Mute while a freeze is expected (local log / NWS forecast)", defaultValue: nBool(ev, "muteExpected")
+    if (ev.defaults.containsKey("onlyIfAlerted")) input "${k}onlyIfAlerted", "bool", title: "Only if something was announced first", defaultValue: nBool(ev, "onlyIfAlerted"), description: "<i>No 'all clear' for an event nobody was told about.</i>"
+    input "${k}modes", "mode", title: "Only in these modes (blank = all)", multiple: true, required: false, defaultValue: nSet(ev, "modes")
+    input "${k}quietStart", "time", title: "Quiet hours start (optional)", required: false
+    input "${k}quietEnd", "time", title: "Quiet hours end (optional)", required: false
 }
 
 // === HARDWARE ROUTING ===
