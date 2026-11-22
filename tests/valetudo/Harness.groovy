@@ -15,7 +15,7 @@ def newDriver(String fixtureName, Map prefs = [:]) {
     def events = [], puts = [], pubs = [], logs = [], gets = []
     def attrs = [mqttStatus: "connected"]
     def st = [:]
-    def clock = [t: 1_800_000_000_000L], runIns = []
+    def clock = [t: 1_800_000_000_000L], runIns = [], unscheduled = []
     def settings = [robotIp: "10.0.0.9", logEnable: false, txtEnable: true, topicPrefix: "valetudo",
                     robotIdentifier: "Quay2", restFallback: true] + prefs
     def b = new Binding()
@@ -31,8 +31,10 @@ def newDriver(String fixtureName, Map prefs = [:]) {
     b.setVariable("sendEvent", { Map m -> events << m; attrs[m.name] = m.value })
     b.setVariable("runIn", { Object[] a -> runIns << a })
     b.setVariable("runEvery5Minutes", { a -> })
-    b.setVariable("unschedule", { a -> })
+    b.setVariable("unschedule", { a -> unscheduled << a })
     b.setVariable("now", { clock.t })
+    b.setVariable("location", [timeZone: TimeZone.getTimeZone("America/Denver")])
+
     b.setVariable("httpGet", { Map p, Closure c ->
         String path = (p.uri as String).replaceFirst(/^http:\/\/[^\/]+/, "")
         gets << path
@@ -42,7 +44,7 @@ def newDriver(String fixtureName, Map prefs = [:]) {
     })
     b.setVariable("httpPut", { Map p, Closure c -> puts << [p.uri, p.body]; c([status: 200]) })
     def d = new ValetudoDriver(b)
-    return [d: d, events: events, puts: puts, pubs: pubs, logs: logs, gets: gets, attrs: attrs, st: st, settings: settings, b: b, clock: clock, runIns: runIns]
+    return [d: d, events: events, puts: puts, pubs: pubs, logs: logs, gets: gets, attrs: attrs, st: st, settings: settings, b: b, clock: clock, runIns: runIns, unscheduled: unscheduled]
 }
 
 def lastEvent(ctx, String n) { ctx.events.findAll { it.name == n }.collect { it.value }.with { it ? it[-1] : null } }
@@ -125,6 +127,31 @@ v.clock.t += 60_000; lvl("88"); lvl("87")
 H.check("trend: no duplicate events for an unchanged status", v.events.count { it.name == "batteryStatus" } == evBefore)
 v.d.parse(JsonOutput.toJson([topic: "valetudo/Quay2/BatteryStateAttribute/status", payload: "discharging"]))
 H.check("mqtt: real flag passes through", lastEvent(v, "batteryStatus") == "discharging")
+
+
+// v3.15.0 robot offline logging (Walter reconnect loop, 2026-11-21)
+def homie = { String p -> v.d.parse(JsonOutput.toJson([topic: "valetudo/Quay2/\$state", payload: p])) }
+v.logs.clear(); v.runIns.clear()
+homie("ready")
+homie("lost")
+H.check("offline: availability turns offline at once", lastEvent(v, "robotAvailability") == "offline", "${lastEvent(v,'robotAvailability')}")
+H.check("offline: no warning on the first lost report", !v.logs.any { it.startsWith("W ") })
+H.check("offline: first check scheduled after 2 min", v.runIns.any { it[0] == 120 && it[1] == "robotOfflineCheck" })
+int availEvents = v.events.count { it.name == "robotAvailability" }
+(1..50).each { v.clock.t += 3_000; homie(it % 2 ? "init" : "lost") }   // reconnect loop: init, lost, init, lost ...
+H.check("offline: reconnect loop logs no warnings", !v.logs.any { it.startsWith("W ") })
+H.check("offline: init does not flip availability (no event spam)", v.events.count { it.name == "robotAvailability" } == availEvents)
+v.d.robotOfflineCheck()
+def warns = v.logs.findAll { it.startsWith("W ") }
+H.check("offline: one warning after the grace period, with count", warns.size() == 1 && warns[0].contains("26 \"lost\" reports") && warns[0].contains("since"), "${warns}")
+H.check("offline: reminder scheduled every 30 min", v.runIns.any { it[0] == 1800 && it[1] == "robotOfflineCheck" })
+v.clock.t += 1_800_000; v.d.robotOfflineCheck()
+H.check("offline: reminder says still offline", v.logs.findAll { it.startsWith("W ") }.size() == 2 && v.logs.findAll { it.startsWith("W ") }[1].contains("still offline"))
+homie("ready")
+H.check("offline: ready brings it back online with one info line", lastEvent(v, "robotAvailability") == "online" && v.logs.any { it.startsWith("I ") && it.contains("back online on MQTT after") })
+H.check("offline: recovery cancels the reminder", v.unscheduled.contains("robotOfflineCheck"))
+v.logs.clear(); homie("lost"); v.clock.t += 30_000; homie("ready")
+H.check("offline: a 30 s blip logs nothing above debug", !v.logs.any { it.startsWith("W ") || it.startsWith("I ") }, "${v.logs}")
 
 // Alert classification
 H.check("alert: drainage -> supply", v.d.severityOf("Abnormal dock drainage. Check if the drain pipe is clogged.") == "supply")
