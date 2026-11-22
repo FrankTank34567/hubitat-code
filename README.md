@@ -21,6 +21,7 @@ that installed the package gets the update from HPM.
 
 ## Apps
 
+- **Advanced Severe Weather Detector** – local predictive severe-weather engine with NWS alerts. Fork of Shane Allen's app (originally namespace `ShaneAllen`), now namespace `franktank`; 1.0.0 mutes routine freeze alerts when a freeze is expected from local history or the NWS forecast, and stops freeze ALARM flapping. Off-hub tests: `tests/severe-weather/run_tests.sh`.
 - **Curtain Scheduler** – schedules curtains/blinds per room on sunrise/sunset or fixed times, with presence/event triggers and a keep-closed mode.
 - **Curtain Scheduler Room** – child app: one room controlled by Curtain Scheduler.
 - **Frame Bridge** – publishes selected devices' attributes to the e-paper frame service (blocks credential-like attributes).
@@ -53,6 +54,7 @@ If a sync changes a packaged file, `build_hpm.py` will refuse to build until its
 ## Licensing
 
 - No repo-wide license: all rights reserved unless a file says otherwise.
+- Advanced Severe Weather Detector is derived from Shane Allen's app, which carried no license statement; credit is kept in the file header.
 - Starling files are GPL-3.0, as published in the original Hubitat-Starling repo (`licenses/Starling-GPL-3.0.txt`).
 - `importUrl` values inside some files point at older/incorrect repo locations; code is kept exactly as the hub has it.
 

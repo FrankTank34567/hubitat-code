@@ -1,11 +1,31 @@
 /**
  * Advanced Severe Weather Detector
+ *
+ * Fork maintained in https://github.com/FrankTank34567/hubitat-code
+ * Derived from the "Advanced Severe Weather Detector" app originally written by
+ * Shane Allen (namespace ShaneAllen). This copy is maintained separately and is
+ * not updated from the original.
+ *
+ * Version 1.0.0 (2026-11-21), first fork release:
+ *  - Expected-freeze auto-mute now uses local data (N of the last 7 nights froze)
+ *    AND the NWS point forecast (tonight's forecast low), instead of only
+ *    "10 of the last 14 days" which took ~10 days to kick in each autumn.
+ *  - Freeze ALARM hysteresis: clears only once the temperature rises a set
+ *    margin above 32F, so a reading hovering at 32-33F no longer flaps
+ *    ALARM/WARNING every 15 minutes.
+ *  - Routine (non-ice) freeze pushes are limited to one per tier per
+ *    re-alert window (default 12 h).
+ *  - Routine freeze no longer drives DEFCON overdrive polling, the global
+ *    all-clear push, forensic event reports or the Dying Breath latch.
+ *  - NWS Ice Storm products are routed as ICE (never muted).
+ *  - Ice storms (freezing rain) are never muted.
  */
 
 definition(
     name: "Advanced Severe Weather Detector",
-    namespace: "ShaneAllen",
-    author: "ShaneAllen",
+    namespace: "franktank",
+    author: "FrankTank34567",
+    importUrl: "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/apps/Advanced%20Severe%20Weather%20Detector.groovy",
     description: "BMS-Grade multi-dimensional predictive hazard detection engine featuring WBGT, Kinetic Air Density, Storm Vectoring, Structural Wind Load, EMI Guard, and MSLP calibration.",
     category: "Safety & Security",
     iconUrl: "",
@@ -255,7 +275,7 @@ def mainPage() {
                 def ta = state.tafAdvisory
                 tafBadge = " <span style='color:#569cd6;'>[✈ TAF ${ta.station}: TS=${ta.ts ? 'YES' : 'no'} FZRA=${ta.fzra ? 'YES' : 'no'} MaxGust=${ta.gustMph}mph]</span>"
             }
-            def winterBadge = state.establishedWinter ? " <span style='color:#9cdcfe; font-weight:bold;'>[❄️ WINTER MODE: routine freeze alerts auto-muted; ice alerts active]</span>" : ""
+            def winterBadge = state.freezeExpected ? " <span style='color:#9cdcfe; font-weight:bold;'>[❄️ FREEZE EXPECTED (${state.freezeExpectedReason ?: 'learned'}): routine freeze alerts auto-muted; ice alerts active]</span>" : ""
             def qcBadge = state.metarExtras?.windQcFlag ? " <span style='color:#f0ad4e;'>[⚠ Wind sensor diverges 20+ mph from ${state.metarExtras.station}]</span>" : ""
             
             def healthHtml = """
@@ -477,7 +497,7 @@ def mainPage() {
             
             <b>🌊 Flood:</b> Blends how hard it's raining right now, how much has fallen today, and how soggy the ground already was (your soil sensors). Saturated ground can't absorb more, so the same rain causes worse flooding. Sprinklers can't trigger this: soil moisture only counts when the rain gauge is ALSO seeing real rain, and the irrigation guard mutes everything during watering cycles.<br><br>
             
-            <b>❄️ Freeze & Ice:</b> Below 32°F is a freeze, simple. The dangerous one is freezing rain: liquid precipitation falling while the "wet-bulb" temperature (what evaporation cools things to) is below freezing. That means ice glazing on contact, and it gets its own ICE ALARM routing.<br><br>
+            <b>❄️ Freeze & Ice:</b> Below 32°F is a freeze, simple. The dangerous one is freezing rain: liquid precipitation falling while the "wet-bulb" temperature (what evaporation cools things to) is below freezing. That means ice glazing on contact, and it gets its own ICE ALARM routing. Routine freezes are only news when they are a surprise: once freezing nights are normal at your place (local log) or the NWS forecast already calls for a freeze tonight, routine freeze pushes and announcements are muted. Ice is never muted.<br><br>
             
             <b>🔥 Severe Heat:</b> Uses WBGT, the heat-stress measure the military and athletics use, built from temperature, humidity, sun load, and wind. It answers "how dangerous is it to be working outside in the sun," which plain temperature does not.<br><br>
             
@@ -485,7 +505,7 @@ def mainPage() {
             
             <b>🔥🌲 Fire Weather:</b> Dry fuel (little rain in 7 days) + thirsty air (high vapor pressure deficit, or RH ≤ 15%) + wind ≥ 25 mph. Those are the official Red Flag ingredients.<br><br>
             
-            <b>Where the data comes from:</b> Everything above runs on YOUR sensors, locally. Two optional internet feeds exist, both U.S. Government: official NWS alerts (every 5 min) and a reference pressure from your nearest airport station (every 3 hours) used to auto-calibrate. Both are controlled by the master switch in Configuration, every pull is logged with its URL, and the app is fully functional with the switch off.<br><br>
+            <b>Where the data comes from:</b> Everything above runs on YOUR sensors, locally. Optional internet feeds exist, all U.S. Government: official NWS alerts (every 5 min), a reference pressure from your nearest airport station (every 3 hours) used to auto-calibrate, that airport's TAF forecast, and the NWS point forecast (hourly, used only to know when a freeze is expected). All are controlled by the master switch in Configuration, every pull is logged with its URL, and the app is fully functional with the switch off.<br><br>
             
             <b>Why alerts don't flip-flop:</b> Escalation is instant (Clear→Warning→Alarm), but de-escalation waits out a hold timer so one calm minute mid-storm doesn't silence your sirens prematurely.
             </div>"""
@@ -554,13 +574,15 @@ def configPage() {
         }
         
         section("<b>🌐 Internet Master Switch & Data Sources</b>") {
-            paragraph "<i><b>Plain English:</b> This app can run 100% locally on your own sensors. Flip this OFF and it will make ZERO internet requests; all detection still works. Flip it ON to add two optional government data feeds, both listed below so you always know exactly what is pulled and from where.</i>"
+            paragraph "<i><b>Plain English:</b> This app can run 100% locally on your own sensors. Flip this OFF and it will make ZERO internet requests; all detection still works. Flip it ON to add optional government data feeds, all listed below so you always know exactly what is pulled and from where.</i>"
             input "enableInternet", "bool", title: "Allow Internet Data (Master Switch)", defaultValue: true, submitOnChange: true
             if (settings.enableInternet != false) {
                 paragraph """<div style='font-size:12px; background:#f0f7ff; border:1px solid #b8d4f0; border-radius:6px; padding:10px; color:#333;'>
                 <b>Everything this app will ever pull from the internet:</b><br>
                 1. <b>Official NWS Alerts</b> (Tornado Warnings, etc.) from <code>api.weather.gov/alerts</code>, every 5 minutes. U.S. Government source.<br>
                 2. <b>Auto-Calibration reference pressure</b> from your nearest official NWS/airport station via <code>api.weather.gov/stations</code>, every 3 hours. U.S. Government source.<br>
+                3. <b>Airport TAF forecast</b> (rides along with Feed 2) from <code>aviationweather.gov/api/data/taf</code>, every 3 hours. U.S. Government (NOAA) source.<br>
+                4. <b>NWS point forecast</b> (12-hour periods, for forecast freeze lows; only while Expected-Freeze Auto-Mute and its forecast option are on) from <code>api.weather.gov/points</code> and <code>api.weather.gov/gridpoints</code>, every hour. U.S. Government source.<br>
                 That is the complete list. No third-party services, no analytics, nothing else. Every single pull is written to the Action Log with its full URL and the values received.</div>"""
                 input "enableNOAA", "bool", title: "Feed 1: NWS / NOAA Official Alerts", defaultValue: true, submitOnChange: true
                 if (enableNOAA) {
@@ -587,7 +609,19 @@ def configPage() {
             
             input "irrigationSwitch", "capability.switch", title: "Irrigation / Sprinkler System Switch (Optional Guard)", required: false, description: "<i>Plain English: map your sprinkler controller's switch here. While it's on (and for 60 minutes after), the app ignores soil moisture spikes and 'first drop' wetness so a sprinkler cycle can never look like a storm or flood.</i>"
             
-            input "seasonalFreezeAuto", "bool", title: "Seasonal Freeze Auto-Mute (Winter Climate Learning)", defaultValue: true, description: "<i>Plain English: freeze alerts matter when a freeze can DAMAGE something: the first hard freeze of autumn (winterize sprinklers, drain hoses) or a surprise late-spring freeze (protect plants). In the dead of a Montana January, 'it froze again' is not news. The app learns your climate by tracking daily lows: once 10 of the last 14 days have hit freezing, routine freeze alerts auto-mute until the pattern breaks in spring. Your freeze switches still fire for automations, and ICE STORM alerts are NEVER muted since freezing rain is dangerous in any season. No internet or configuration needed; it adapts to your actual location.</i>"
+            input "seasonalFreezeAuto", "bool", title: "Expected-Freeze Auto-Mute (local climate + NWS forecast)", defaultValue: true, submitOnChange: true, description: "<i>Plain English: freeze alerts matter when a freeze is a SURPRISE: the first hard freeze of autumn (winterize sprinklers, drain hoses) or an unexpected late-spring freeze (protect plants). When freezing nights are already normal, or the forecast already says it will freeze tonight, 'it froze again' is not news. Two signals decide 'expected': (1) LOCAL: your own station's daily lows (enough freezing nights in the last 7), and (2) FORECAST: the NWS point forecast for your hub's location calls for a low at or near freezing in the next 18 hours. While a freeze is expected, routine freeze pushes, TTS, sirens and sounds are muted. Your freeze switches still fire for automations, and ICE STORM alerts are NEVER muted since freezing rain is dangerous in any season.</i>"
+            if (settings.seasonalFreezeAuto != false) {
+                input "freezeLocalDays", "number", title: "Local: freezing nights out of the last 7 that mean 'freeze season' (1-7)", defaultValue: 4, range: "1..7", description: "<i>Plain English: once this many of the last 7 days dipped to 32°F or below at YOUR station, freezes count as expected. Lower = mutes sooner in autumn. Default 4.</i>"
+                if (settings.enableInternet != false) {
+                    input "enableFreezeForecast", "bool", title: "Forecast: use NWS forecast lows (Feed 4)", defaultValue: true, submitOnChange: true, description: "<i>Plain English: if the National Weather Service forecast for your hub's coordinates calls for a freeze in the next 18 hours, that freeze is expected and won't ping you. Hourly pull from api.weather.gov. Ignored if the last good forecast is over 12 hours old.</i>"
+                    if (settings.enableFreezeForecast != false) {
+                        input "freezeForecastMargin", "decimal", title: "Forecast margin (°F above 32 that still counts as 'freeze expected')", defaultValue: 2.0, range: "0..10", description: "<i>Plain English: your yard can run colder than the forecast grid. With 2, a forecast low of 34°F or below counts as an expected freeze. Default 2.</i>"
+                    }
+                }
+                input "freezeAlertFirstOfSeason", "bool", title: "Still alert the first freeze of the season", defaultValue: true, description: "<i>Plain English: if your station hasn't logged a single freezing day in the last 14, the next freeze alerts once even if it was forecast (time to winterize). Off = mute every expected freeze.</i>"
+            }
+            input "freezeHysteresis", "decimal", title: "Freeze ALARM clear margin (°F above 32)", defaultValue: 2.0, range: "0..10", description: "<i>Plain English: once a freeze ALARM is on, it stays on until the temperature climbs this far above 32°F. Stops a reading that hovers at 32-33°F from flipping ALARM/WARNING all afternoon. Default 2 (clears at 34°F).</i>"
+            input "freezeRealertHours", "number", title: "Routine freeze re-alert window (hours)", defaultValue: 12, range: "0..72", description: "<i>Plain English: after a routine (non-ice) freeze push, more freeze pushes in this window are logged but not sent. One per night instead of one per flap. Ice storms ignore this. 0 = off. Default 12.</i>"
             
             // [SCIENCE: WBGT]
             input "enableWBGT", "bool", title: "Enable Wet-Bulb Globe Temperature (WBGT)", defaultValue: true, description: "Calculates a proxy utilizing Temp, Hum, Wind, and Solar Radiation to measure true heat stress in direct sunlight."
@@ -828,7 +862,12 @@ def initialize() {
         runEvery3Hours("pollAutoCal")
         pollAutoCal()
     }
-    
+
+    if (freezeForecastEnabled()) {
+        runEvery1Hour("pollForecast")
+        runIn(20, "pollForecast")  // after the auto-cal points lookup, not on top of it
+    }
+
     // === SENSOR PROFILER ===
     // Hubitat exposes each device's driver name (typeName). We use it to
     // identify the sensor family and seed known hardware characteristics,
@@ -900,6 +939,12 @@ void appButtonHandler(btn) {
         state.remove("freezeLogDate")
         state.remove("todayMinTemp")
         state.remove("establishedWinter")
+        state.remove("freezeExpected")
+        state.remove("freezeExpectedReason")
+        state.remove("freezeForecast")
+        state.remove("forecastUrl")
+        state.remove("forecastUrlTime")
+        state.remove("forecastFailCount")
         state.remove("lastLightningCount")
         state.remove("lastEngineError")
         
@@ -1046,6 +1091,7 @@ def noaaResponseHandler(response, data) {
         else if (event.contains("Severe Thunderstorm Watch") && parsedAlerts["Thunderstorm"] != "ALARM") parsedAlerts["Thunderstorm"] = "WARNING"
         if (event.contains("Flash Flood") || event.contains("Flood Warning")) parsedAlerts["Flood"] = "ALARM"
         else if (event.contains("Flood Watch") || event.contains("Flood Advisory")) parsedAlerts["Flood"] = "WARNING"
+        if (event.contains("Ice Storm") || event.contains("Freezing Rain") || event.contains("Freezing Drizzle")) parsedAlerts["FreezeIce"] = true
         if (event.contains("Freeze Warning") || event.contains("Ice Storm Warning") || event.contains("Winter Storm Warning")) parsedAlerts["Freeze"] = "ALARM"
         else if (event.contains("Freeze Watch") || event.contains("Frost Advisory") || event.contains("Winter Weather Advisory")) parsedAlerts["Freeze"] = "WARNING"
         if (event.contains("Excessive Heat Warning")) parsedAlerts["SevereHeat"] = "ALARM"
@@ -1256,6 +1302,136 @@ def tafResponseHandler(response, data) {
     
     state.tafAdvisory = [ts: hasTs, fzra: hasFzra, gustKt: maxGustKt, gustMph: Math.round(maxGustKt * 1.15078), time: now(), station: (settings.tafStationOverride?.trim()?.toUpperCase() ?: state.calStationId), raw: escapeHtml(raw.take(300))]
     logAction("🌐 TAF ADVISORY: ${state.tafAdvisory.station} forecasts: Thunderstorms=${hasTs ? 'YES' : 'no'}, Freezing Precip=${hasFzra ? 'YES' : 'no'}, Max Gust=${maxGustKt}kt (${state.tafAdvisory.gustMph} mph).")
+}
+
+// ==============================================================================
+// NWS POINT FORECAST (Feed 4, api.weather.gov, US Government)
+// Used ONLY to decide whether a freeze is expected, so routine freeze alerts
+// can stay quiet. It never raises a freeze probability or fires anything.
+// ==============================================================================
+def freezeForecastEnabled() {
+    return settings.enableInternet != false && settings.seasonalFreezeAuto != false && settings.enableFreezeForecast != false
+}
+
+def pollForecast() {
+    if (!freezeForecastEnabled()) return
+    def hdrs = ["User-Agent": "Hubitat-AdvancedSevereWeatherApp/4.0 (freeze-forecast)", "Accept": "application/geo+json"]
+    // The forecast URL for a point rarely changes; refresh it weekly or after errors.
+    if (!state.forecastUrl || !state.forecastUrlTime || (now() - state.forecastUrlTime) > 604800000) {
+        def lat = location.latitude; def lon = location.longitude
+        if (!lat || !lon) { logAction("⚠ FORECAST: Hub has no coordinates set (Settings > Hub Details)."); return }
+        def latR = String.format(java.util.Locale.US, "%.4f", lat as Double)
+        def lonR = String.format(java.util.Locale.US, "%.4f", lon as Double)
+        def url = "https://api.weather.gov/points/${latR},${lonR}"
+        logAction("🌐 DATA PULL: Looking up NWS forecast grid via ${url}")
+        try { asynchttpGet("forecastPointsHandler", [uri: url, timeout: 15, headers: hdrs, followRedirects: true]) } catch (e) { log.error "Forecast points fetch failed: ${e}" }
+        return
+    }
+    try { asynchttpGet("forecastHandler", [uri: state.forecastUrl, timeout: 15, headers: hdrs, followRedirects: true]) } catch (e) { log.error "Forecast fetch failed: ${e}" }
+}
+
+def forecastPointsHandler(response, data) {
+    if (response.hasError()) { logAction("⚠ FORECAST: NWS points lookup failed (${response.getStatus()}). Will retry next hour."); return }
+    def json = parseJsonRobust(response)
+    def url = json?.properties?.forecast?.toString()
+    // Only ever follow a forecast link that stays on api.weather.gov.
+    if (!url || !url.startsWith("https://api.weather.gov/gridpoints/")) {
+        logAction("⚠ FORECAST: NWS points lookup returned no usable forecast URL.")
+        return
+    }
+    state.forecastUrl = url
+    state.forecastUrlTime = now()
+    logAction("🌐 FORECAST: Using NWS forecast ${url}")
+    runIn(2, "pollForecast")
+}
+
+def forecastHandler(response, data) {
+    if (response.hasError()) {
+        def fails = (state.forecastFailCount ?: 0) + 1
+        state.forecastFailCount = fails
+        // NWS gridpoint forecasts throw intermittent 500/503s; keep the last
+        // good forecast (it ages out after 12 h) and log only now and then.
+        if (fails == 1 || fails % 6 == 0) logAction("⚠ FORECAST: NWS forecast fetch failed (${response.getStatus()}), ${fails} in a row. Keeping last good forecast until it is 12 h old.")
+        if (fails % 3 == 0) state.forecastUrl = null  // re-resolve the grid in case it moved
+        return
+    }
+    def json = parseJsonRobust(response)
+    def periods = json?.properties?.periods
+    if (!(periods instanceof List) || periods.isEmpty()) { logAction("⚠ FORECAST: NWS forecast had no periods."); return }
+    def parsed = []
+    periods.take(14).each { p ->
+        def tF = forecastTempF(p.temperature, p.temperatureUnit)
+        def start = parseIsoMs(p.startTime)
+        def end = parseIsoMs(p.endTime)
+        if (tF == null || start == null || end == null) return
+        parsed << [name: escapeHtml((p.name ?: "").toString().take(30)), start: start, end: end, day: (p.isDaytime == true), temp: tF]
+    }
+    if (!parsed) { logAction("⚠ FORECAST: NWS forecast periods could not be read."); return }
+    state.forecastFailCount = 0
+    state.freezeForecast = [time: now(), periods: parsed]
+    def nights = parsed.findAll { !it.day }.take(3).collect { "${it.name} ${Math.round(it.temp)}°F" }.join(", ")
+    logAction("🌐 FORECAST: NWS lows ${nights ?: 'n/a'}.")
+    runIn(2, "evaluateMatrix")
+}
+
+// NWS returns either a plain number + temperatureUnit, or a quantity object.
+def forecastTempF(temp, unit) {
+    if (temp == null) return null
+    def v = temp
+    def u = unit?.toString() ?: "F"
+    if (temp instanceof Map) {
+        v = temp.value
+        u = (temp.unitCode?.toString()?.contains("degC")) ? "C" : "F"
+    }
+    if (v == null) return null
+    try {
+        def d = v as Double
+        return (u == "C") ? (d * 9.0 / 5.0 + 32.0) : d
+    } catch (e) { return null }
+}
+
+def parseIsoMs(str) {
+    if (!str) return null
+    try { return toDateTime(str.toString())?.getTime() } catch (e) { return null }
+}
+
+// === EXPECTED-FREEZE DECISION ===
+// "Expected" = local climate says freezes are normal now, OR the NWS forecast
+// calls for a freeze in the next 18 h. Exception: the first freeze of the
+// season (no freezing day logged in 14 days) still alerts if the user wants it.
+def computeFreezeExpectation() {
+    def r = [expected: false, local: false, forecast: false, firstOfSeason: false, reason: ""]
+    if (settings.seasonalFreezeAuto == false) return r
+
+    def flog = state.freezeDayLog ?: []
+    def last7 = flog.size() > 7 ? flog.drop(flog.size() - 7) : flog
+    def need = Math.max(1, Math.min(7, ((settings.freezeLocalDays != null ? settings.freezeLocalDays : 4) as Integer)))
+    def froze7 = last7.count { it }
+    r.local = (froze7 >= need)
+
+    def reasons = []
+    if (r.local) reasons << "local: ${froze7} of last ${last7.size()} days froze"
+
+    def fc = state.freezeForecast
+    if (freezeForecastEnabled() && fc?.periods && (now() - (fc.time ?: 0)) < 43200000) {
+        def margin = (settings.freezeForecastMargin != null ? settings.freezeForecastMargin : 2.0) as Double
+        def horizon = now() + 64800000  // 18 h
+        def hit = fc.periods.find { p -> p.end > now() && p.start < horizon && p.temp <= 32.0 + margin }
+        if (hit) {
+            r.forecast = true
+            reasons << "forecast: ${hit.name} ${hit.day ? 'high' : 'low'} ${Math.round(hit.temp)}°F"
+        }
+    }
+
+    // The log only gains today's result at midnight, so a freeze that starts
+    // after midnight would still look like "first of season" that evening.
+    // A routine freeze alert sent in the last 48 h closes that gap.
+    def recentlyAlerted = (now() - (state.lastRoutineFreezeAlertTs ?: 0)) < 172800000
+    r.firstOfSeason = (settings.freezeAlertFirstOfSeason != false) && !flog.any { it } && !recentlyAlerted
+    r.expected = (r.local || r.forecast) && !r.firstOfSeason
+    r.reason = reasons.join("; ")
+    if ((r.local || r.forecast) && r.firstOfSeason) r.reason += " (first freeze of the season still alerts)"
+    return r
 }
 
 // === HISTORY, PRESENCE, & HEARTBEAT ===
@@ -1600,7 +1776,9 @@ def doEvaluateMatrix() {
     state.survivalModeActive = false
     
     // --- EMI/EMP GUARD & DYING BREATH SENSOR FAILOVER ---
-    def wasAlarmActive = state.threatMatrix?.any { k, v -> v.state == "ALARM" || v.state == "ICE ALARM" }
+    // A routine (dry) freeze ALARM can sit on for days in winter; it must not
+    // make a stale sensor look like a storm-destroyed one.
+    def wasAlarmActive = state.threatMatrix?.any { k, v -> (v.state == "ALARM" && k != "Freeze") || v.state == "ICE ALARM" }
     state.emiActive = false
     
     if (isStale && settings.enableEMIGuard != false) {
@@ -1699,7 +1877,13 @@ def doEvaluateMatrix() {
     }
     if (state.todayMinTemp == null || t < state.todayMinTemp) state.todayMinTemp = t
     def winterLog = state.freezeDayLog ?: []
-    state.establishedWinter = (winterLog.size() >= 10 && winterLog.count { it } >= 10)
+    state.establishedWinter = (winterLog.size() >= 10 && winterLog.count { it } >= 10)  // kept for reference/dashboards
+    def freezeExp = computeFreezeExpectation()
+    if (freezeExp.expected != (state.freezeExpected == true)) {
+        logAction(freezeExp.expected ? "❄️ FREEZE EXPECTED (${freezeExp.reason}): routine freeze alerts muted; ice alerts stay live." : "❄️ Freeze no longer expected${freezeExp.reason ? ' (' + freezeExp.reason + ')' : ''}: routine freeze alerts active again.")
+    }
+    state.freezeExpected = freezeExp.expected
+    state.freezeExpectedReason = freezeExp.reason
     def tTrendData = getTrendData(state.tempHistory, 0.25)
     def sTrendData = getTrendData(state.spreadHistory, 0.25)
     def wTrendData = getTrendData(state.windHistory, 0.25)
@@ -2105,6 +2289,9 @@ def doEvaluateMatrix() {
         
         if (sensorHum) frConf += 30
         def isIceStorm = false
+        def frPrevState = state.threatMatrix?.Freeze?.state ?: "Clear"
+        def frHoldAlarm = (frPrevState == "ALARM")
+        def frClearAt = 32.0 + Math.max(0.0, ((settings.freezeHysteresis != null ? settings.freezeHysteresis : 2.0) as Double))
         
         // ADVISORY: airport TAF forecasts freezing rain/drizzle. Raises
         // confidence and gives lead time context; cannot alert alone.
@@ -2125,6 +2312,12 @@ def doEvaluateMatrix() {
         else if (t <= 32.0) {
             frProb = 100
             frMath += "&nbsp;↳ Hard Freeze Active: 100%<br>"
+        } else if (frHoldAlarm && t < frClearAt) {
+            // HYSTERESIS: a sensor sitting at 32-33F used to flip ALARM/WARNING
+            // every debounce period (5 flips in 90 min on 11/20/26). Hold the
+            // ALARM until the temperature has clearly recovered.
+            frProb = 100
+            frMath += "&nbsp;↳ Holding Freeze ALARM until ${String.format('%.1f', frClearAt)}° (clear margin): 100%<br>"
         } else if (t <= 40.0 && tTrendData.rate < 0) {
             def dropRate = Math.abs(tTrendData.rate > 0.1 ? tTrendData.rate : 0.1)
             def hoursToFreeze = (t - 32.0) / dropRate
@@ -2143,11 +2336,16 @@ def doEvaluateMatrix() {
         
         frMath += "<b>Final Prob: ${frProb}%</b>"
         
-        if (frProb > highestProbThisCycle) highestProbThisCycle = frProb
-        
+        // Only ice drives DEFCON overdrive polling and the hazard chart. A dry
+        // freeze is slow and needs no 1-minute polling (it used to keep DEFCON
+        // engaged all night, every night, all winter).
+        if (isIceStorm && frProb > highestProbThisCycle) highestProbThisCycle = frProb
+
         if (frProb > 0 && !isIceStorm) {
             frWhy = "Current temperature is ${String.format('%.1f', t)}°. Threat intensity is ${frThreat}%. "
-            if (frProb == 100) {
+            if (frProb == 100 && t > 32.0) {
+                frWhy += "Just above freezing; the freeze ALARM holds until ${String.format('%.1f', frClearAt)}° so it does not flap. "
+            } else if (frProb == 100) {
                 frWhy += (dpSpread <= 3.0) ? "Hard Freeze with Hoar Frost actively occurring. " : "Dry Hard Freeze actively occurring. "
             } else {
                 frWhy += "Probability is ${frProb}% based on a trajectory of dropping ${String.format('%.2f', Math.abs(tTrendData.rate))}°/hr towards the freezing point. "
@@ -2158,6 +2356,9 @@ def doEvaluateMatrix() {
         // That threw MissingPropertyException and aborted the ENTIRE evaluation
         // cycle precisely when an ice storm was detected, and the ICE flag
         // never reached processHazardState.
+        if (state.freezeExpected && !isIceStorm) {
+            frWhy += "<br><i>❄️ Freeze expected (${state.freezeExpectedReason}): routine freeze pushes and announcements are muted. Ice alerts stay live.</i>"
+        }
         if (isIceStorm) frMath += "|ICE_FLAG_TRUE"
         processHazardState("Freeze", frThreat, frProb, frConf, frWhy, frMath, debounceMs)
     }
@@ -2359,7 +2560,10 @@ def doEvaluateMatrix() {
     updateHistory("probHistory", highestProbThisCycle, 86400000)
 
     // --- FORENSIC EVENT TRACKING & SUMMARY ---
-    def anyAlarmActive = state.threatMatrix?.any { k, v -> v.state == "ALARM" || v.state == "WARNING" || v.state == "ICE ALARM" || v.state == "ICE WARNING" }
+    // A routine (dry) freeze is not a severe-weather "event": counting it sent
+    // a "Weather All-Clear" push every winter morning and overwrote the
+    // forensic report with freeze nights. Ice still counts.
+    def anyAlarmActive = state.threatMatrix?.any { k, v -> ((v.state == "ALARM" || v.state == "WARNING") && k != "Freeze") || v.state == "ICE ALARM" || v.state == "ICE WARNING" }
     
     if (anyAlarmActive) {
         state.globalThreatActive = true
@@ -2461,7 +2665,10 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
     if (settings.enableNOAA && settings.noaaTriggersHardware) {
         def noaaMap = state.noaaAlertsMap ?: [:]
         def officialStatus = noaaMap[haz] ?: "Clear"
-        
+        // An official Ice Storm / freezing rain product is ice, not a routine
+        // freeze: route it to the ICE states so it is never muted.
+        if (haz == "Freeze" && noaaMap["FreezeIce"] == true && officialStatus != "Clear") isIceStorm = true
+
         if (officialStatus == "ALARM") {
             targetState = isIceStorm ? "ICE ALARM" : "ALARM"
             why = "<b>[🚨 OVERRIDE: NOAA OFFICIAL ALARM TRIGGERED]</b> " + why
@@ -2521,12 +2728,16 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
         // (freezing rain) are dangerous regardless of season: never muted.
         // The first freeze of autumn always alerts, because the 14-day log
         // can't reach 10 freezes until winter is genuinely established.
-        def seasonalMute = (haz == "Freeze" && !targetState.contains("ICE") && state.establishedWinter == true && settings.seasonalFreezeAuto != false)
+        // Fork 1.0.0: "expected" now comes from computeFreezeExpectation()
+        // (local N-of-7 log OR NWS forecast low), not only 10-of-14.
+        def routineFreeze = (haz == "Freeze" && !targetState.contains("ICE"))
+        def seasonalMute = (routineFreeze && state.freezeExpected == true && settings.seasonalFreezeAuto != false)
         if (seasonalMute) {
             warnModeOk = false
             alarmModeOk = false
-            logAction("❄️ WINTER MODE: Freeze ${targetState} state set, alerts auto-muted (10+ freezing days in last 14; established winter). Switches still fired. Disable 'Seasonal Freeze Auto-Mute' in config to always alert.")
+            logAction("❄️ Freeze ${targetState}: expected (${state.freezeExpectedReason ?: 'learned'}), push/TTS muted. Switches still updated.")
         }
+        def freezeCoolMs = ((settings.freezeRealertHours != null ? settings.freezeRealertHours : 12) as Integer) * 3600000L
         
         def warnSw = settings["switch${haz}Warn"]
         def alarmSw = settings["switch${haz}Alarm"]
@@ -2541,7 +2752,13 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
             }
             safeOff(warnSw)
             
-            if (alarmModeOk) {
+            def lastAlarmOut = data.lastAlarmNotifyTs ?: 0
+            if (alarmModeOk && routineFreeze && freezeCoolMs > 0 && (now() - lastAlarmOut) < freezeCoolMs) {
+                def minsLeft = Math.ceil((freezeCoolMs - (now() - lastAlarmOut)) / 60000).toInteger()
+                logAction("Freeze ALARM repeat within the routine freeze re-alert window (${minsLeft} min left); push/TTS suppressed, switches updated.")
+            } else if (alarmModeOk) {
+                data.lastAlarmNotifyTs = now()
+                if (routineFreeze) state.lastRoutineFreezeAlertTs = now()
                 if (settings["${pfx}AlarmNotify"]) {
                     def defAlarmMsg = "🚨 CRITICAL: ${targetState == 'ICE ALARM' ? 'ICE STORM' : haz} ALARM Conditions Detected!"
                     sendNotification(settings["push${haz}Alarm"] ?: defAlarmMsg, settings["notify${haz}"])
@@ -2550,7 +2767,7 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
                 if (settings["${pfx}AlarmSiren"]) triggerSiren()
                 if (settings["${pfx}AlarmSound"]) playSoundFile(settings["url${haz}Alarm"])
             } else {
-                logAction("Alarm audio/push suppressed due to Mode Restriction.")
+                if (!seasonalMute) logAction("Alarm audio/push suppressed due to Mode Restriction.")
             }
             
         } else if (targetState.contains("WARNING")) {
@@ -2565,9 +2782,16 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
                 // 12:54 and 3:00 AM, 7/14/26). Repeats inside the window are
                 // logged and switches still fire, but humans are pinged once.
                 // Escalation to ALARM is never cooled down.
-                def cooldownMs = ((settings.realertCooldownMins != null ? settings.realertCooldownMins : 120) as Integer) * 60000
+                def cooldownMs = ((settings.realertCooldownMins != null ? settings.realertCooldownMins : 120) as Integer) * 60000L
                 def lastWarnPush = data.lastWarnNotifyTs ?: 0
+                if (routineFreeze) {
+                    // A routine freeze WARNING right after a freeze ALARM (or
+                    // another WARNING) in the window is a step-down/flap, not news.
+                    cooldownMs = Math.max(cooldownMs, freezeCoolMs)
+                    lastWarnPush = Math.max(lastWarnPush as Long, (data.lastAlarmNotifyTs ?: 0) as Long)
+                }
                 if (cooldownMs <= 0 || (now() - lastWarnPush) >= cooldownMs) {
+                    if (routineFreeze && (settings["${pfx}WarnNotify"] || settings["${pfx}WarnTTS"])) state.lastRoutineFreezeAlertTs = now()
                     if (settings["${pfx}WarnNotify"]) {
                         def defWarnMsg = "⚠ WARNING: Elevated ${targetState == 'ICE WARNING' ? 'Freezing Rain/Ice' : haz} Conditions."
                         sendNotification(settings["push${haz}Warn"] ?: defWarnMsg, settings["notify${haz}"])
@@ -2581,7 +2805,7 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
                     logAction("${haz} re-entered WARNING within the episode cooldown (${minsLeft} min remaining); push/TTS suppressed as a repeat, switches updated. Escalation to ALARM would still alert immediately.")
                 }
             } else {
-                logAction("Warning audio/push suppressed due to Mode Restriction.")
+                if (!seasonalMute) logAction("Warning audio/push suppressed due to Mode Restriction.")
             }
             
         } else {
@@ -2592,7 +2816,7 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
                 stopAllSirens()
                 // Per-hazard all-clear push (optional, off by default; the
                 // Global All-Clear sequencer still handles the whole-event message)
-                if (settings["${pfx}ClearNotify"]) {
+                if (settings["${pfx}ClearNotify"] && !seasonalMute) {
                     sendNotification(settings["push${haz}Clear"] ?: "✅ ${haz} threat has cleared.", settings["notify${haz}"])
                 }
             }
@@ -2719,7 +2943,7 @@ def createChildDevice() {
     def deviceId = "SevWeather-${app.id}"
     if (!getChildDevice(deviceId)) {
         try {
-            addChildDevice("ShaneAllen", "Advanced Severe Weather Information Device", deviceId, null, [name: "Advanced Severe Weather Information Device", label: "Advanced Severe Weather Information Device", isComponent: false])
+            addChildDevice("franktank", "Advanced Severe Weather Information Device", deviceId, null, [name: "Advanced Severe Weather Information Device", label: "Advanced Severe Weather Information Device", isComponent: false])
             logAction("Child device successfully created.")
             updateChildDevice()
         } catch (e) { log.error "Failed to create child device. Ensure the driver is installed. ${e}" }

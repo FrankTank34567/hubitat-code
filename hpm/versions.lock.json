@@ -7,6 +7,13 @@
       "apps/Curtain Scheduler Room.groovy": "1640a1159f14a3ed1eb4a38cc083ea930dbea635125c34f850e7df74d3da9701"
     }
   },
+  "severe-weather": {
+    "version": "1.0.0",
+    "dateReleased": "2026-11-21",
+    "hashes": {
+      "apps/Advanced Severe Weather Detector.groovy": "3ab4bcaa5720560dcf1f791dc7fb21f566080ea8803be6ad2dd3485f53842cff"
+    }
+  },
   "frame-bridge": {
     "version": "0.6.0",
     "dateReleased": "2026-11-15",
