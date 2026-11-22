@@ -147,7 +147,7 @@ step(e, 30.0)
 H.check("stale forecast (13 h) ignored", e.st.freezeExpected == false, "${e.st.freezeExpectedReason}")
 
 // ── 6. Ice storm while freeze expected -> ICE ALARM pushed ──────────────────
-def f = newApp([:], [freezeDayLog: [true] * 14])
+def f = newApp([:], [freezeDayLog: [true] * 14, tafAdvisory: [fzra: true, ts: false, station: "KGTF", time: T0]])
 f.app.forecastHandler(resp(fcJson), null)
 f.settings.sensorRain.attrs.rainRate = 0.10
 f.st.threatMatrix.Freeze.lastTrig = T0 - 3600000
@@ -158,7 +158,7 @@ H.check("ice: ICE push sent", f.pushes.any { it.msg.contains("ICE STORM") }, "${
 
 // Ice ends but it stays below freezing: ICE ALARM -> ALARM step-down is not a new push.
 f.settings.sensorRain.attrs.rainRate = 0.0
-step(f, 30.0, 20L * 60000)
+step(f, 30.0, 70L * 60000)   // past the 60 min ice hold
 H.check("ice step-down to dry freeze: ALARM, no Freeze push (ice-end all-clear is fine)", frState(f) == "ALARM" && freezePushes(f).size() == 1, "${frState(f)} ${f.pushes}")
 
 // ── 7. NWS Ice Storm Warning routed as ICE, Winter Storm Warning muted ──────
@@ -169,7 +169,7 @@ H.check("NWS ice storm: ICE ALARM, pushed", frState(g) == "ICE ALARM" && g.pushe
 def g2 = newApp([:], [freezeDayLog: [true] * 14, noaaAlertsMap: [Freeze: "ALARM"]])
 g2.app.forecastHandler(resp(fcJson), null)
 step(g2, 25.0)
-H.check("NWS winter storm (not ice) while expected: ALARM, muted", frState(g2) == "ALARM" && freezePushes(g2).isEmpty(), "${g2.pushes}")
+H.check("NWS Freeze-level ALARM (not ice) while expected: ALARM, muted", frState(g2) == "ALARM" && freezePushes(g2).isEmpty(), "${g2.pushes}")
 
 // ── 8. Auto-mute off -> old behaviour (alerts), but still once per 12 h ─────
 def h = newApp([seasonalFreezeAuto: false], [freezeDayLog: [true] * 14])
@@ -195,6 +195,61 @@ step(m, 25.0)   // app reads the real date (new Date()), so seed yesterday
 H.check("rollover: log gained a freezing day", m.st.freezeDayLog.size() == 14 && m.st.freezeDayLog[-1] == true, "${m.st.freezeDayLog}")
 H.check("rollover: 4/7 now -> expected", m.st.freezeExpected == true, "${m.st.freezeExpectedReason}")
 
-H.check("no engine errors in any run", ![a, b, b2, c, d, d2, e, f, g, g2, h, h2, k, k2, m].any { it.st.lastEngineError })
+// ── 11. Ice coverage across the app ─────────────────────────────────────────
+// Freezing rain at 28F (below the old 31F bound) with TAF FZRA, freeze expected.
+def i1 = newApp([:], [freezeDayLog: [true] * 14, tafAdvisory: [fzra: true, ts: false, station: "KGTF", time: T0]])
+i1.app.forecastHandler(resp(fcJson), null)
+i1.settings.sensorRain.attrs.rainRate = 0.05
+step(i1, 28.0)
+H.check("ice 28F + TAF FZRA: ICE ALARM pushed although freeze expected", frState(i1) == "ICE ALARM" && i1.pushes.any { it.msg.contains("ICE STORM") }, "${frState(i1)} ${i1.pushes}")
+// Hold through a 30 min break, leave ICE after > 60 min dry, then restart inside 6 h: no 2nd push.
+i1.settings.sensorRain.attrs.rainRate = 0.0
+step(i1, 28.0, 30L * 60000)
+H.check("ice: holds ICE ALARM through a 30 min precip break", frState(i1) == "ICE ALARM", frState(i1))
+step(i1, 28.0, 45L * 60000)
+H.check("ice: after > 60 min dry, drops to routine freeze ALARM", frState(i1) == "ALARM", frState(i1))
+i1.settings.sensorRain.attrs.rainRate = 0.05
+step(i1, 28.0, 30L * 60000)
+H.check("ice: restart inside 6 h -> ICE ALARM, no 2nd ICE push", frState(i1) == "ICE ALARM" && i1.pushes.count { it.msg.contains("ICE STORM") } == 1, "${frState(i1)} ${i1.pushes}")
+// Uncorroborated (no TAF, forecast says snow/fog): ICE WARNING, not ALARM.
+def i2 = newApp([:], [freezeDayLog: [true] * 14])
+i2.app.forecastHandler(resp(fcJson), null)
+i2.settings.sensorRain.attrs.rainRate = 0.05
+step(i2, 33.0)
+H.check("ice uncorroborated: ICE WARNING tier", frState(i2) == "ICE WARNING", frState(i2))
+H.check("ice uncorroborated: still not muted (warn push honoured)", i2.pushes.any { it.msg.contains("Freezing Rain/Ice") }, "${i2.pushes}")
+// NWS forecast text corroborates.
+def iceFc = fcJson.replaceFirst('"shortForecast": "Patchy Fog"', '"shortForecast": "Freezing Rain Likely"')
+def i3 = newApp([:], [freezeDayLog: [true] * 14])
+i3.app.forecastHandler(resp(iceFc), null)
+i3.settings.sensorRain.attrs.rainRate = 0.05
+step(i3, 30.0)
+H.check("ice: NWS forecast 'Freezing Rain' corroborates -> ICE ALARM", frState(i3) == "ICE ALARM", "${frState(i3)} ${i3.st.threatMatrix.Freeze.mathEx}")
+// Local-only mode: no corroboration possible, original ALARM behaviour kept.
+def i4 = newApp([enableInternet: false], [freezeDayLog: [true] * 14])
+i4.settings.sensorRain.attrs.rainRate = 0.05
+step(i4, 30.0)
+H.check("ice local-only mode: ICE ALARM without corroboration", frState(i4) == "ICE ALARM", frState(i4))
+
+// ── 12. NWS product mapping (real parser) ───────────────────────────────────
+def nws(String event, String desc) {
+    def j = groovy.json.JsonOutput.toJson([features: [[properties: [event: event, headline: event, description: desc]]]])
+    return resp(j)
+}
+def n1 = newApp([:], [freezeDayLog: [true] * 14])
+n1.app.noaaResponseHandler(nws("Winter Storm Warning", "Heavy snow expected. Total snow accumulations of 8 to 14 inches."), null)
+H.check("NWS Winter Storm Warning (snow only) no longer maps to Freeze", n1.st.noaaAlertsMap.Freeze == "Clear" && !n1.st.noaaAlertsMap.FreezeIce, "${n1.st.noaaAlertsMap}")
+H.check("NWS snow-only storm: no Freeze push", freezePushes(n1).isEmpty(), "${n1.pushes}")
+def n2 = newApp([:], [freezeDayLog: [true] * 14])
+n2.app.noaaResponseHandler(nws("Winter Storm Warning", "Mixed precipitation. Ice accumulations of a quarter inch from freezing rain."), null)
+H.check("NWS Winter Storm Warning with freezing rain -> Freeze ALARM + ice", n2.st.noaaAlertsMap.Freeze == "ALARM" && n2.st.noaaAlertsMap.FreezeIce == true, "${n2.st.noaaAlertsMap}")
+H.check("NWS ice storm text: ICE ALARM state and ICE push", frState(n2) == "ICE ALARM" && n2.pushes.any { it.msg.contains("ICE STORM") }, "${frState(n2)} ${n2.pushes}")
+def n3 = newApp([:], [freezeDayLog: [true] * 14])
+def two = groovy.json.JsonOutput.toJson([features: [[properties: [event: "Freeze Warning", headline: "", description: ""]], [properties: [event: "Frost Advisory", headline: "", description: ""]]]])
+n3.app.noaaResponseHandler(resp(two), null)
+H.check("NWS: later Frost Advisory does not downgrade Freeze Warning", n3.st.noaaAlertsMap.Freeze == "ALARM", "${n3.st.noaaAlertsMap}")
+H.check("NWS Freeze Warning while freeze expected: muted", frState(n3) == "ALARM" && freezePushes(n3).isEmpty(), "${frState(n3)} ${n3.pushes}")
+
+H.check("no engine errors in any run", ![a, b, b2, c, d, i1, i2, i3, i4, n1, n2, n3, d2, e, f, g, g2, h, h2, k, k2, m].any { it.st.lastEngineError })
 println "\n${H.pass} passed, ${H.fail} failed"
 System.exit(H.fail ? 1 : 0)

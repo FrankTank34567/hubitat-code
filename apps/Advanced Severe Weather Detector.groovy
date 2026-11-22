@@ -17,8 +17,18 @@
  *    re-alert window (default 12 h).
  *  - Routine freeze no longer drives DEFCON overdrive polling, the global
  *    all-clear push, forensic event reports or the Dying Breath latch.
- *  - NWS Ice Storm products are routed as ICE (never muted).
- *  - Ice storms (freezing rain) are never muted.
+ *  - Ice: no more 31F lower bound (freezing rain at 28F used to be scored as a
+ *    routine hard freeze). ICE ALARM needs corroboration from the TAF, an NWS
+ *    ice product or NWS forecast text; uncorroborated = ICE WARNING tier.
+ *    ICE states hold through precip breaks under 60 min, and repeat ICE
+ *    ALARMs inside the ice re-alert window (default 6 h) are logged, not
+ *    pushed. Ice is never muted by the expected-freeze logic.
+ *  - NWS: Winter Storm Warning / Winter Weather Advisory no longer map to
+ *    Freeze (they sent "Freeze ALARM" for snowstorms) unless their text calls
+ *    for freezing rain/drizzle or ice accumulation, then they route as ICE.
+ *    Ice Storm products route as ICE. A WARNING-level product no longer
+ *    downgrades an ALARM-level one in the same poll.
+ *  - Child device globalState ignores routine (non-ice) freeze.
  */
 
 definition(
@@ -621,6 +631,7 @@ def configPage() {
                 input "freezeAlertFirstOfSeason", "bool", title: "Still alert the first freeze of the season", defaultValue: true, description: "<i>Plain English: if your station hasn't logged a single freezing day in the last 14, the next freeze alerts once even if it was forecast (time to winterize). Off = mute every expected freeze.</i>"
             }
             input "freezeHysteresis", "decimal", title: "Freeze ALARM clear margin (°F above 32)", defaultValue: 2.0, range: "0..10", description: "<i>Plain English: once a freeze ALARM is on, it stays on until the temperature climbs this far above 32°F. Stops a reading that hovers at 32-33°F from flipping ALARM/WARNING all afternoon. Default 2 (clears at 34°F).</i>"
+            input "iceRealertHours", "number", title: "Ice storm re-alert window (hours)", defaultValue: 6, range: "0..72", description: "<i>Plain English: ice alerts are never muted, but if freezing rain stops and restarts, a repeat ICE ALARM inside this window is logged instead of pushed. Going from ICE WARNING up to ICE ALARM always alerts. 0 = off. Default 6.</i>"
             input "freezeRealertHours", "number", title: "Routine freeze re-alert window (hours)", defaultValue: 12, range: "0..72", description: "<i>Plain English: after a routine (non-ice) freeze push, more freeze pushes in this window are logged but not sent. One per night instead of one per flap. Ice storms ignore this. 0 = off. Default 12.</i>"
             
             // [SCIENCE: WBGT]
@@ -713,7 +724,7 @@ def dnaConfigPage() {
             [id: "Tornado", icon: "🌪️", wTTS: "Warning. Elevated probability of tornado conditions.", aTTS: "Critical Alert. Tornado conditions detected locally.", plain: "Fires when pressure is crashing violently while winds swing direction hard, or when official NWS Tornado Warnings cover your location. WARNING means the ingredients are assembling; ALARM means it is effectively on top of you. Treat ALARMs here as shelter-now events."],
             [id: "Thunderstorm", icon: "⛈️", wTTS: "Warning. Elevated probability of severe thunderstorms.", aTTS: "Critical Alert. Severe thunderstorm conditions actively detected.", plain: "Fires on the gust-front fingerprint (pressure jump + temp crash + wind spike), nearby lightning ramping up or approaching, 58+ mph gusts, or the first drops hitting the piezo rain head. This is your best engine for pop-up summer storms."],
             [id: "Flood", icon: "🌊", wTTS: "Warning. Elevated probability of flash flood conditions.", aTTS: "Critical Alert. Flash flood conditions detected locally.", plain: "Fires on heavy rain rates, big daily accumulation, or normal rain landing on already-saturated soil. Sprinklers cannot trigger it: soil moisture only counts alongside real gauge rain, and the irrigation guard mutes it during watering."],
-            [id: "Freeze", icon: "❄️", wTTS: "Warning. Rapid trajectory towards freeze detected.", aTTS: "Alert. Freeze conditions actively occurring.", plain: "WARNING when temperature is on a trajectory to hit 32°F within hours (pipe/plant protection lead time). ALARM at or below freezing. Freezing rain gets its own ICE ALARM: liquid rain + sub-freezing wet-bulb = ice glazing everything on contact."],
+            [id: "Freeze", icon: "❄️", wTTS: "Warning. Rapid trajectory towards freeze detected.", aTTS: "Alert. Freeze conditions actively occurring.", plain: "WARNING when temperature is on a trajectory to hit 32°F within hours (pipe/plant protection lead time). ALARM at or below freezing. Freezing rain gets its own ICE ALARM: liquid rain + sub-freezing wet-bulb = ice glazing everything on contact. Because a backyard sensor can't tell freezing rain from wet snow, ICE ALARM needs the airport TAF, an NWS ice product or the NWS forecast to agree; otherwise it is an ICE WARNING. Routine freezes are muted while a freeze is expected; ice never is."],
             [id: "SevereHeat", icon: "🔥", wTTS: "Warning. High heat index detected. Caution advised.", aTTS: "Critical Alert. Severe heat index conditions detected locally.", plain: "Based on WBGT, the heat-stress standard used by the military and sports medicine (temp + humidity + sun + wind). Answers 'is it dangerous to work outside in the sun right now,' which plain temperature can't."],
             [id: "Tropical", icon: "🌀", wTTS: "Warning. Tropical cyclone signatures detected.", aTTS: "Critical Alert. Deep tropical cyclone conditions actively impacting location.", plain: "Deep, sustained sea-level pressure drops with strong wind and heavy moisture. Requires calibrated pressure to function (check the calibration badge on the main page)."],
             [id: "FireWeather", icon: "🔥🌲", wTTS: "Warning. Elevated fire weather conditions.", aTTS: "Critical Alert. Extreme Red Flag fire weather actively detected. No outdoor sparks.", plain: "The official Red Flag recipe: bone-dry fuel (little rain in 7 days), thirsty air (very low humidity or high vapor pressure deficit), and wind 25+ mph. When this alarms, any spark spreads fast."]
@@ -1091,9 +1102,19 @@ def noaaResponseHandler(response, data) {
         else if (event.contains("Severe Thunderstorm Watch") && parsedAlerts["Thunderstorm"] != "ALARM") parsedAlerts["Thunderstorm"] = "WARNING"
         if (event.contains("Flash Flood") || event.contains("Flood Warning")) parsedAlerts["Flood"] = "ALARM"
         else if (event.contains("Flood Watch") || event.contains("Flood Advisory")) parsedAlerts["Flood"] = "WARNING"
-        if (event.contains("Ice Storm") || event.contains("Freezing Rain") || event.contains("Freezing Drizzle")) parsedAlerts["FreezeIce"] = true
-        if (event.contains("Freeze Warning") || event.contains("Ice Storm Warning") || event.contains("Winter Storm Warning")) parsedAlerts["Freeze"] = "ALARM"
-        else if (event.contains("Freeze Watch") || event.contains("Frost Advisory") || event.contains("Winter Weather Advisory")) parsedAlerts["Freeze"] = "WARNING"
+        // FREEZE/ICE mapping (fork 1.0.0). Winter Storm Warnings and Winter
+        // Weather Advisories are snow products; mapping them to Freeze sent
+        // "Freeze ALARM" pushes for snowstorms, and the expected-freeze mute
+        // would have silenced them. They now count only when their text
+        // calls for freezing rain/drizzle or ice accumulation (then as ICE).
+        // All NWS products still show in the NWS alert list on the dashboard.
+        def descL = "${alert.properties?.headline ?: ''} ${alert.properties?.description ?: ''}".toLowerCase()
+        def mentionsIce = descL.contains("freezing rain") || descL.contains("freezing drizzle") || descL.contains("ice accumulation")
+        def iceEvent = event.contains("Ice Storm") || event.contains("Freezing Rain") || event.contains("Freezing Drizzle")
+        def winterIce = (event.contains("Winter Storm Warning") || event.contains("Winter Weather Advisory") || event.contains("Winter Storm Watch")) && mentionsIce
+        if (iceEvent || winterIce) parsedAlerts["FreezeIce"] = true
+        if (event.contains("Freeze Warning") || event.contains("Ice Storm Warning") || (event.contains("Winter Storm Warning") && winterIce)) parsedAlerts["Freeze"] = "ALARM"
+        else if ((event.contains("Freeze Watch") || event.contains("Frost Advisory") || iceEvent || winterIce) && parsedAlerts["Freeze"] != "ALARM") parsedAlerts["Freeze"] = "WARNING"
         if (event.contains("Excessive Heat Warning")) parsedAlerts["SevereHeat"] = "ALARM"
         else if (event.contains("Heat Advisory")) parsedAlerts["SevereHeat"] = "WARNING"
         if (event.contains("Hurricane Warning") || event.contains("Tropical Storm Warning")) parsedAlerts["Tropical"] = "ALARM"
@@ -1364,7 +1385,8 @@ def forecastHandler(response, data) {
         def start = parseIsoMs(p.startTime)
         def end = parseIsoMs(p.endTime)
         if (tF == null || start == null || end == null) return
-        parsed << [name: escapeHtml((p.name ?: "").toString().take(30)), start: start, end: end, day: (p.isDaytime == true), temp: tF]
+        parsed << [name: escapeHtml((p.name ?: "").toString().take(30)), start: start, end: end, day: (p.isDaytime == true), temp: tF,
+                   text: escapeHtml((p.shortForecast ?: "").toString().take(80))]
     }
     if (!parsed) { logAction("⚠ FORECAST: NWS forecast periods could not be read."); return }
     state.forecastFailCount = 0
@@ -1393,6 +1415,29 @@ def forecastTempF(temp, unit) {
 def parseIsoMs(str) {
     if (!str) return null
     try { return toDateTime(str.toString())?.getTime() } catch (e) { return null }
+}
+
+// === ICE CORROBORATION ===
+// Returns a short source description if any forecast/official source calls
+// for freezing precipitation now or in the next 18 h, else null.
+def iceCorroboration() {
+    if (settings.enableInternet == false) return null
+    def taf = state.tafAdvisory
+    if (taf?.fzra && (now() - (taf.time ?: 0)) < 21600000) return "${taf.station} TAF FZRA/FZDZ"
+    if ((state.noaaAlertsMap ?: [:])["FreezeIce"] == true) return "NWS ice product"
+    def fc = state.freezeForecast
+    if (fc?.periods && (now() - (fc.time ?: 0)) < 43200000) {
+        def horizon = now() + 64800000
+        def hit = fc.periods.find { p -> p.end > now() && p.start < horizon && isIceForecastText(p.text) }
+        if (hit) return "NWS forecast: ${hit.name} ${hit.text}"
+    }
+    return null
+}
+
+def isIceForecastText(txt) {
+    if (!txt) return false
+    def s = txt.toString().toLowerCase()
+    return s.contains("freezing rain") || s.contains("freezing drizzle") || s.contains("sleet") || s.contains("ice pellets") || s.contains("wintry mix")
 }
 
 // === EXPECTED-FREEZE DECISION ===
@@ -2302,12 +2347,36 @@ def doEvaluateMatrix() {
             frMath += "&nbsp;↳ ADVISORY: ${tafF.station} TAF forecasts freezing precipitation: +10.0%<br>"
         }
         
-        if (t <= 35.0 && t >= 31.0 && wb <= 32.0 && (r > 0.0 || leakWet || piezoRaining)) {
+        // ICE DETECTION (fork 1.0.0). The original rule required 31-35F, so
+        // freezing rain at 28F was scored as a routine "hard freeze", which the
+        // expected-freeze mute would silence. No lower bound now. Local sensors
+        // cannot tell freezing rain from wet snow/graupel on the piezo, so an
+        // ICE ALARM needs corroboration (TAF FZRA/FZDZ, an NWS ice product, or
+        // NWS forecast text with freezing rain/drizzle, sleet or wintry mix).
+        // Uncorroborated: ICE WARNING tier. Local-only mode: no way to
+        // corroborate, keep the original ALARM behaviour.
+        def precipNow = (r > 0.0 || leakWet || piezoRaining)
+        def iceLocal = (precipNow && t <= 35.0 && wb <= 32.0)
+        if (iceLocal) state.lastIcePrecipTs = now()
+        // Hold an ICE state through short breaks in the precipitation (60 min)
+        // so showers don't flap ICE ALARM -> ALARM -> ICE ALARM.
+        def iceHold = (!iceLocal && frPrevState.contains("ICE") && t <= 35.0 && (now() - (state.lastIcePrecipTs ?: 0)) < 3600000)
+        def iceCorr = iceCorroboration()
+        if (iceLocal || iceHold) {
             isIceStorm = true
-            frProb = 100
             frThreat = 100
-            frMath += "&nbsp;↳ REACTIVE: ICE STORM (Liquid Precip + Sub-Freezing Wet Bulb): 100%<br>"
-            frWhy = "<b>ICE ACCUMULATION WARNING:</b> Precipitation is falling into a sub-freezing evaporative layer. Flash-freezing and ice accumulation actively occurring. "
+            def why = iceHold ? "precip paused < 60 min, holding" : "liquid precip + sub-freezing wet bulb"
+            if (iceCorr || settings.enableInternet == false) {
+                frProb = 100
+                frMath += "&nbsp;↳ REACTIVE: ICE STORM (${why}; ${iceCorr ?: 'local-only mode'}): 100%<br>"
+                frWhy = "<b>ICE ACCUMULATION WARNING:</b> Precipitation is falling into a sub-freezing layer (${iceCorr ?: 'local sensors'}). Flash-freezing and ice accumulation likely. "
+            } else {
+                def wT = (settings.freezeWarnThresh ?: 50) as Integer
+                def aT = (settings.freezeAlarmThresh ?: 80) as Integer
+                frProb = Math.max(wT, Math.min(aT - 1, 65))
+                frMath += "&nbsp;↳ REACTIVE: Possible ice (${why}), NOT corroborated by TAF/NWS forecast or alerts: ICE WARNING tier ${frProb}%<br>"
+                frWhy = "<b>POSSIBLE FREEZING PRECIPITATION:</b> Precipitation at ${String.format('%.1f', t)}° with a sub-freezing wet bulb, but no forecast or official product calls for freezing rain (could be wet snow or sleet on the sensor). "
+            }
         }
         else if (t <= 32.0) {
             frProb = 100
@@ -2738,6 +2807,11 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
             logAction("❄️ Freeze ${targetState}: expected (${state.freezeExpectedReason ?: 'learned'}), push/TTS muted. Switches still updated.")
         }
         def freezeCoolMs = ((settings.freezeRealertHours != null ? settings.freezeRealertHours : 12) as Integer) * 3600000L
+        // Ice is never muted, but a repeat ICE ALARM inside this window (ice
+        // showers flapping on and off) is logged instead of pushed. Escalating
+        // from ICE WARNING to ICE ALARM always alerts.
+        def iceEntry = (haz == "Freeze" && targetState.contains("ICE"))
+        def iceCoolMs = ((settings.iceRealertHours != null ? settings.iceRealertHours : 6) as Integer) * 3600000L
         
         def warnSw = settings["switch${haz}Warn"]
         def alarmSw = settings["switch${haz}Alarm"]
@@ -2753,11 +2827,16 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
             safeOff(warnSw)
             
             def lastAlarmOut = data.lastAlarmNotifyTs ?: 0
+            def lastIceOut = data.lastIceAlarmNotifyTs ?: 0
             if (alarmModeOk && routineFreeze && freezeCoolMs > 0 && (now() - lastAlarmOut) < freezeCoolMs) {
                 def minsLeft = Math.ceil((freezeCoolMs - (now() - lastAlarmOut)) / 60000).toInteger()
                 logAction("Freeze ALARM repeat within the routine freeze re-alert window (${minsLeft} min left); push/TTS suppressed, switches updated.")
+            } else if (alarmModeOk && iceEntry && currentState != "ICE WARNING" && iceCoolMs > 0 && (now() - lastIceOut) < iceCoolMs) {
+                def minsLeft = Math.ceil((iceCoolMs - (now() - lastIceOut)) / 60000).toInteger()
+                logAction("ICE ALARM repeat within the ice re-alert window (${minsLeft} min left); push/TTS suppressed, ice switch updated.")
             } else if (alarmModeOk) {
                 data.lastAlarmNotifyTs = now()
+                if (iceEntry) data.lastIceAlarmNotifyTs = now()
                 if (routineFreeze) state.lastRoutineFreezeAlertTs = now()
                 if (settings["${pfx}AlarmNotify"]) {
                     def defAlarmMsg = "🚨 CRITICAL: ${targetState == 'ICE ALARM' ? 'ICE STORM' : haz} ALARM Conditions Detected!"
@@ -2789,6 +2868,10 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
                     // another WARNING) in the window is a step-down/flap, not news.
                     cooldownMs = Math.max(cooldownMs, freezeCoolMs)
                     lastWarnPush = Math.max(lastWarnPush as Long, (data.lastAlarmNotifyTs ?: 0) as Long)
+                } else if (iceEntry) {
+                    // ICE WARNING after an ICE ALARM, or a repeat, inside the ice window.
+                    cooldownMs = Math.max(cooldownMs, iceCoolMs)
+                    lastWarnPush = Math.max(lastWarnPush as Long, (data.lastIceAlarmNotifyTs ?: 0) as Long)
                 }
                 if (cooldownMs <= 0 || (now() - lastWarnPush) >= cooldownMs) {
                     if (routineFreeze && (settings["${pfx}WarnNotify"] || settings["${pfx}WarnTTS"])) state.lastRoutineFreezeAlertTs = now()
@@ -2961,6 +3044,7 @@ def updateChildDevice() {
         hazards.each { haz ->
             if (!matrix[haz]) return
             def s = matrix[haz].state
+            if (haz == "Freeze" && !s.contains("ICE")) return  // routine freeze is not a severe-weather state
             if (s.contains("ALARM")) highestState = "ALARM"
             else if (s.contains("WARNING") && highestState == "Clear") highestState = "WARNING"
         }
