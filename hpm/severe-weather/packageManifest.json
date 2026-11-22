@@ -1,9 +1,9 @@
 {
   "packageName": "Advanced Severe Weather Detector",
   "author": "FrankTank34567",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "minimumHEVersion": "2.2.9",
-  "dateReleased": "2026-11-21",
+  "dateReleased": "2026-11-22",
   "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
   "apps": [
     {

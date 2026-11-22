@@ -24,8 +24,8 @@
       "key": "severe-weather",
       "name": "Advanced Severe Weather Detector",
       "category": "Safety & Security",
-      "description": "Local predictive severe-weather engine (tornado, storm, flood, freeze/ice, heat, tropical, fire) with NWS alerts; fork with forecast-aware freeze alert muting.",
-      "version": "1.0.0",
+      "description": "Local-first severe-weather monitor (storm, flood, freeze/ice, heat, fire) from your own station, with NWS products as corroboration and as their own optional notifications.",
+      "version": "2.0.0",
       "apps": [
         {
           "file": "apps/Advanced Severe Weather Detector.groovy",

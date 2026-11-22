@@ -8,10 +8,10 @@
     }
   },
   "severe-weather": {
-    "version": "1.0.0",
-    "dateReleased": "2026-11-21",
+    "version": "2.0.0",
+    "dateReleased": "2026-11-22",
     "hashes": {
-      "apps/Advanced Severe Weather Detector.groovy": "4ebf4bfa619a1a7b589288f2e32b49bd38d35534e149ad0089d55d6633f758ac"
+      "apps/Advanced Severe Weather Detector.groovy": "739f2ac8944a5d4017fdd7e6f1896951a0d14dab66ba713733c52f3521dc69ff"
     }
   },
   "frame-bridge": {

@@ -6,6 +6,34 @@
  * Shane Allen (namespace ShaneAllen). This copy is maintained separately and is
  * not updated from the original.
  *
+ * Version 2.0.0 (2026-11-22), local-first foundation:
+ *  - Removed the local Tornado and Tropical engines (a single backyard station
+ *    cannot detect either; their scores fired on ordinary wind/pressure).
+ *    Tornado, hurricane and tropical storm now come from NWS products.
+ *  - NWS: exact product-name table covering current products (High Wind,
+ *    Blizzard, Snow Squall, Extreme Cold / Cold Weather Advisory, Extreme
+ *    Heat, Storm Surge, civil emergencies...), the strongest product wins,
+ *    every product keeps its own expiry, and nothing NWS is trusted once the
+ *    last good poll is 30+ min old. Each product group has its own
+ *    notification rows (warnings / watches & advisories), one message per new
+ *    product; updates are logged unless enabled. Local hazard rows now default
+ *    to local-sensor triggers, and say when NWS agrees.
+ *  - Pressure: uses station (absolute) pressure when the sensor has it and
+ *    computes sea-level pressure with the NWS altimeter formula and the site
+ *    elevation (entered, learned from airport comparisons, or the NWS grid).
+ *    Tendencies are measured on the raw series, so calibration can no longer
+ *    inject a fake pressure step. Air density uses station pressure.
+ *  - Per-sensor quality control: each reading is checked for staleness and
+ *    plausible range; a hazard whose inputs are missing pauses and keeps its
+ *    state (a missing temperature used to read as 0°F). New Sensor offline /
+ *    back notifications. Removed the EMI guard, Dying Breath and Eye of the
+ *    Storm lock (superseded or without basis).
+ *  - Lightning detectors with a strike count are no longer double counted
+ *    from distance updates; the first count after start is a baseline.
+ *  - Location-agnostic: a hub move of 10+ km re-discovers the NWS office,
+ *    grid, airport and elevation; outside NWS coverage the app runs locally.
+ *    °C hubs and metric pressure/wind/rain sensors are converted.
+ *
  * Version 1.0.0 (2026-11-21), first fork release:
  *  - Expected-freeze auto-mute now uses local data (N of the last 7 nights froze)
  *    AND the NWS point forecast (tonight's forecast low), instead of only
@@ -43,7 +71,7 @@ definition(
     namespace: "franktank",
     author: "FrankTank34567",
     importUrl: "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/apps/Advanced%20Severe%20Weather%20Detector.groovy",
-    description: "BMS-Grade multi-dimensional predictive hazard detection engine featuring WBGT, Kinetic Air Density, Storm Vectoring, Structural Wind Load, EMI Guard, and MSLP calibration.",
+    description: "Local-first severe weather monitor: your own station's readings judged against published criteria, with official NWS products as corroboration and as their own optional notifications.",
     category: "Safety & Security",
     iconUrl: "",
     iconX2Url: "",
@@ -280,12 +308,17 @@ def mainPage() {
             def isHealthy = timeSinceEval < 120
             def healthDot = isHealthy ? "<span style='color:#5cb85c;'>●</span>" : "<span style='color:#d9534f;'>●</span>"
             def execTime = state.lastEvalDuration ?: 0
-            def emiStatus = state.emiActive ? "<span style='color:#f0ad4e; font-weight:bold;'>[⚡ EMI INTERFERENCE LOCK ACTIVE]</span>" : ""
+            def emiStatus = ""
             
             def netBadge = (settings.enableInternet == false) ? "<span style='color:#f0ad4e; font-weight:bold;'>[🔒 LOCAL-ONLY: Zero internet use]</span>" : "<span style='color:#569cd6;'>[🌐 Internet: NWS Alerts ${settings.enableNOAA ? 'ON' : 'off'} | Auto-Cal ${settings.enableAutoCal ? 'ON' : 'off'}]</span>"
             def calBadge = ""
-            if (state.mslpMiscalibrated) calBadge = " <span style='color:#d9534f; font-weight:bold;'>[⚠ PRESSURE UNCALIBRATED: sea-level rules suspended]</span>"
+            if (state.mslpMiscalibrated) calBadge = " <span style='color:#d9534f; font-weight:bold;'>[⚠ NO SEA-LEVEL PRESSURE YET: set your elevation or enable auto-calibration; pressure tendency still works]</span>"
+            else if (state.pressureMode == "station") calBadge = " <span style='color:#5cb85c;'>[📡 Sea-level pressure from your station pressure + ${Math.round((siteElevationM() ?: 0) * 3.28084)} ft (${siteElevationSource()})${state.lastCalPull?.ours != null ? ', last check ' + state.lastCalPull.station + ' ' + state.lastCalPull.ref + ' vs yours ' + state.lastCalPull.ours : ''}]</span>"
             else if (state.lastCalPull) calBadge = " <span style='color:#5cb85c;'>[📡 Calibrated vs ${state.lastCalPull.station}: ${state.lastCalPull.offset > 0 ? '+' : ''}${state.lastCalPull.offset} inHg]</span>"
+            def sh = state.sensorHealth ?: [:]
+            def bad = sh.findAll { k, v -> v.ok == false }
+            if (bad) calBadge += "<br><span style='color:#d9534f; font-weight:bold;'>[⚠ SENSORS: " + bad.collect { k, v -> "${k} ${v.why}" }.join("; ") + "]</span>"
+            if (state.nwsCoverage == false) calBadge += " <span style='color:#f0ad4e;'>[🌐 Outside NWS coverage: local sensors only]</span>"
             def errBadge = state.lastEngineError ? "<br><span style='color:#d9534f; font-weight:bold;'>[🛑 LAST ENGINE ERROR: ${state.lastEngineError}]</span>" : ""
             def qualBadge = "<br><span style='color:#9cdcfe;'>[🔎 Sensor Noise Floor: pressure ±${String.format('%.3f', (state.pressResolution ?: 0.01))} inHg | quality gates ${Math.max(0.03, 3.0 * (state.pressResolution ?: 0.01))} inHg min-move]</span>"
             def tafBadge = ""
@@ -318,7 +351,7 @@ def mainPage() {
                 }
             }
             
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Runs predictive thermodynamic models for seven severe weather profiles. Features DNA event forensics, gravity-wave detection, structural load physics, and cross-references data with NWS API alerts. ${wdHtml}${cloudHtml}</div>"
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Watches your own weather station for five hazards (storm, flood, freeze/ice, heat, fire weather), checks the NWS for official products as corroboration, and sends each kind of alert only the way you set it in the Notification Center. ${wdHtml}${cloudHtml}</div>"
             
             // --- FORENSIC EVENT SUMMARY TABLE ---
             if (state.lastEventReport) {
@@ -342,12 +375,10 @@ def mainPage() {
                 def matrix = state.threatMatrix ?: [:]
                 def noaaMap = state.noaaAlertsMap ?: [:]
                 def hazards = [
-                    [id: "Tornado", icon: "🌪️"],
                     [id: "Thunderstorm", icon: "⛈️"],
                     [id: "Flood", icon: "🌊"],
                     [id: "Freeze", icon: "❄️"],
                     [id: "SevereHeat", icon: "🔥"],
-                    [id: "Tropical", icon: "🌀"],
                     [id: "FireWeather", icon: "🔥🌲"]
                 ]
                 
@@ -356,8 +387,8 @@ def mainPage() {
                     def icon = hazMap.icon
                     def data = matrix[haz] ?: [threat: 0, prob: 0, conf: 0, state: "Clear", howWhy: "Gathering sensor data...", mathEx: "Awaiting math cycle...", lastTrig: 0, history: []]
   
-                    def noaaStatus = noaaMap[haz] ?: "Clear"
-                    def noaaRaw = noaaMap["Raw_${haz}"] ?: "No official alerts for this sector."
+                    def noaaStatus = nwsHazardStatus(haz)
+                    def noaaRaw = nwsActiveAlerts().findAll { it.haz == haz }.collect { "<b>${it.event}</b>: ${it.headline}" }.join("<br>") ?: "No official alerts for this sector."
                     def noaaColor = noaaStatus == "ALARM" ? "#d9534f" : (noaaStatus == "WARNING" ? "#f0ad4e" : "#5cb85c")
                     def noaaBg = noaaStatus == "Clear" ? "#f4f8f4" : (noaaStatus == "WARNING" ? "#fcf6ec" : "#fdf0f0")
                     
@@ -465,12 +496,11 @@ def mainPage() {
                     def wTrend = state.windTrendStr ?: "Stable"
                     def sTrend = state.spreadTrendStr ?: "Stable"
                     
-                    def rawP = getFloat(sensorPress, ["pressure", "Baromrelin", "baromrelin", "Baromabsin", "baromabsin", "barometricPressure"], 0.0)
-                    def p = rawP + getPressOffset()
+                    def altNow = state.currentAltimeter
                     
                     def windDir = getFloat(sensorWindDir, ["windDirection", "winddir", "windDir"], "N/A")
                     def strikes = state.lightningHistory?.size() ?: 0
-                    def gravWave = state.gravityWaveActive ? "<span style='color:red; font-weight:bold;'>DETECTED (Turbulence)</span>" : "Calm"
+                    def gravWave = state.gravityWaveActive ? "<span style='color:#f0ad4e; font-weight:bold;'>repeated small swings</span>" : "none"
                     def rho = state.currentAirDensity ?: 1.225
                     def wbgt = state.currentWBGT ?: getFloat(sensorTemp, ["temperature"], 0.0)
                     
@@ -489,13 +519,14 @@ def mainPage() {
                     def vectorStr = state.lightningVectorStr ?: "N/A"
                     
                     def physicsDisplay = "<div style='padding: 12px; background: #f0f2f5; border-radius: 6px; font-size: 13px; border: 1px solid #dcdfe3; color: #555; line-height: 1.6;'>"
-                    physicsDisplay += "<b>Calibrated MSLP:</b> ${String.format('%.2f', p)} inHg (${pTrend})<br>"
+                    def psNow = readStationPressure()
+                    physicsDisplay += "<b>Sea-level pressure (altimeter):</b> ${altNow != null ? String.format('%.2f', altNow as Double) + ' inHg' : 'n/a (no elevation yet)'}${psNow != null ? ' | <b>Station pressure:</b> ' + String.format('%.2f', psNow) + ' inHg' : ''} (${pTrend})<br>"
                     physicsDisplay += "<b>Temp Velocity:</b> ${tTrend} &nbsp;|&nbsp; <b>Squeeze Vel:</b> ${sTrend}<br>"
                     physicsDisplay += "<b>Wind:</b> ${wTrend} @ ${windDir}° &nbsp;|&nbsp; <b>Lightning (30m):</b> ${strikes} strikes (${vectorStr})<br>"
-                    physicsDisplay += "<b>Structural Wind Load:</b> <span style='color:${loadColor}; font-weight:bold;'>${String.format('%.2f', windLoadVal)} ${windLoadUnit}</span><br>"
-                    physicsDisplay += "<b>Air Density (Kinetic Mass):</b> ${String.format('%.3f', rho)} kg/m³<br>"
+                    physicsDisplay += "<b>Wind Pressure (peak gust):</b> <span style='color:${loadColor}; font-weight:bold;'>${String.format('%.2f', windLoadVal)} ${windLoadUnit}</span><br>"
+                    physicsDisplay += "<b>Air Density:</b> ${String.format('%.3f', rho)} kg/m³<br>"
                     physicsDisplay += "<b>Wet-Bulb Globe Temp (WBGT Proxy):</b> ${String.format('%.1f', wbgt)}°F<br>"
-                    physicsDisplay += "<b>Atmospheric Gravity Waves:</b> ${gravWave}<br>"
+                    physicsDisplay += "<b>Pressure oscillation (info only):</b> ${gravWave}<br>"
                     physicsDisplay += "<b>Instant Leak Sensors:</b> ${leakWetStr}</div>"
                     paragraph physicsDisplay
                 }
@@ -507,19 +538,16 @@ def mainPage() {
 
         section("<b>📖 How This Works (Plain English)</b>", hideable: true, hidden: true) {
             paragraph """<div style='font-size:13px; color:#333; line-height:1.6;'>
-            <b>The one-paragraph version:</b> Every 90 seconds or so, your weather station pushes fresh readings to this hub. Once a minute, this app looks at how those readings are <i>changing</i>, because storms announce themselves through change: pressure jumping or crashing, temperature suddenly dropping, wind gusting, lightning getting closer. Each of seven hazard engines scores its own probability from 0-100%. Cross a threshold and your switches, sirens, and phones fire.<br><br>
+            <b>The one-paragraph version:</b> Every 90 seconds or so, your weather station pushes fresh readings to this hub. Once a minute, this app looks at how those readings are <i>changing</i>, because storms announce themselves through change: pressure jumping or crashing, temperature suddenly dropping, wind gusting, lightning getting closer. Each of five hazard engines scores its own probability from 0-100%. Cross a threshold and your switches, sirens, and phones fire.<br><br>
             
             <b>⛈️ Thunderstorm:</b> Watches for the classic gust-front fingerprint: within about 30 minutes, pressure JUMPS, temperature CRASHES, and wind spikes. That combination is the cold outflow air a storm shoves ahead of itself, and it usually arrives minutes before the rain. Also counts lightning strikes in the last 30 minutes, checks whether strikes are getting closer or farther (approach speed and ETA), and fires instantly if gusts hit 58 mph, the official government threshold for a "severe" thunderstorm.<br><br>
             
-            <b>🌪️ Tornado:</b> Looks for violently accelerating pressure falls (a small, intense low passing very close), winds swinging direction by 45°+ while pressure dives, and destructive wind loading on structures. Honest caveat: a single backyard station mostly detects tornadic conditions <i>arriving</i>, not forming miles away. The NWS alert feed is your real early warning here; the local engine confirms and reacts.<br><br>
-            
+            <b>🌪️ Tornado, 🌀 hurricane and tropical storm:</b> These come from the NWS, as their own notifications. A backyard station cannot see a tornado forming or a hurricane approaching; that takes radar and satellites. The 1.x local Tornado and Tropical scores fired on ordinary wind and pressure and were removed in 2.0.<br><br>
             <b>🌊 Flood:</b> Blends how hard it's raining right now, how much has fallen today, and how soggy the ground already was (your soil sensors). Saturated ground can't absorb more, so the same rain causes worse flooding. Sprinklers can't trigger this: soil moisture only counts when the rain gauge is ALSO seeing real rain, and the irrigation guard mutes everything during watering cycles.<br><br>
             
             <b>❄️ Freeze & Ice:</b> Below 32°F is a freeze, simple. The dangerous one is freezing rain: liquid precipitation falling while the "wet-bulb" temperature (what evaporation cools things to) is below freezing. That means ice glazing on contact, and it gets its own ICE ALARM routing. Routine freezes are only news when they are a surprise: once freezing nights are normal at your place (local log) or the NWS forecast already calls for a freeze tonight, routine freeze pushes and announcements are muted. Ice is never muted.<br><br>
             
             <b>🔥 Severe Heat:</b> Uses WBGT, the heat-stress measure the military and athletics use, built from temperature, humidity, sun load, and wind. It answers "how dangerous is it to be working outside in the sun," which plain temperature does not.<br><br>
-            
-            <b>🌀 Tropical:</b> Deep, slowly falling sea-level pressure with sustained wind and heavy moisture. Requires calibrated pressure (see the calibration badge above).<br><br>
             
             <b>🔥🌲 Fire Weather:</b> Dry fuel (little rain in 7 days) + thirsty air (high vapor pressure deficit, or RH ≤ 15%) + wind ≥ 25 mph. Those are the official Red Flag ingredients.<br><br>
             
@@ -583,7 +611,7 @@ def configPage() {
         }
         
         section("<b>Instant 'First Drop' Sensors (Micro-Precipitation)</b>") {
-            paragraph "<i>Map up to 3 standard Z-Wave/Zigbee leak sensors placed outside to bypass tipping-bucket delays. Provides instant reactive triggers for Thunderstorm, Flood, and Tropical DNAs.</i>"
+            paragraph "<i>Map up to 3 standard Z-Wave/Zigbee leak sensors placed outside to bypass tipping-bucket delays. Provides instant reactive triggers for the Thunderstorm, Flood and Ice checks.</i>"
             input "sensorLeak", "capability.waterSensor", title: "Instant Rain Sensor 1", required: false
             input "sensorLeak2", "capability.waterSensor", title: "Instant Rain Sensor 2", required: false
             input "sensorLeak3", "capability.waterSensor", title: "Instant Rain Sensor 3", required: false
@@ -599,13 +627,13 @@ def configPage() {
                 paragraph """<div style='font-size:12px; background:#f0f7ff; border:1px solid #b8d4f0; border-radius:6px; padding:10px; color:#333;'>
                 <b>Everything this app will ever pull from the internet:</b><br>
                 1. <b>Official NWS Alerts</b> (Tornado Warnings, etc.) from <code>api.weather.gov/alerts</code>, every 5 minutes. U.S. Government source.<br>
-                2. <b>Auto-Calibration reference pressure</b> from your nearest official NWS/airport station via <code>api.weather.gov/stations</code>, every 3 hours. U.S. Government source.<br>
+                2. <b>Auto-Calibration reference pressure</b> from your nearest official NWS/airport station via <code>api.weather.gov/stations</code>, every 3 hours. With a station-pressure sensor it is used to learn your elevation once, not to shift your readings. U.S. Government source.<br>
                 3. <b>Airport TAF forecast</b> (rides along with Feed 2) from <code>aviationweather.gov/api/data/taf</code>, every 3 hours. U.S. Government (NOAA) source.<br>
                 4. <b>NWS point forecast</b> (12-hour periods, for forecast freeze lows; only while Expected-Freeze Auto-Mute and its forecast option are on) from <code>api.weather.gov/points</code> and <code>api.weather.gov/gridpoints</code>, every hour. U.S. Government source.<br>
-                That is the complete list. No third-party services, no analytics, nothing else. Every single pull is written to the Action Log with its full URL and the values received.</div>"""
+                That is the complete list. No third-party services, no analytics, nothing else. Every single pull is written to the Action Log with its full URL and the values received. Everything is found from your hub's coordinates (Settings > Hub Details), so after a move it re-discovers itself; outside NWS coverage these feeds stand down and the app runs on your sensors alone.</div>"""
                 input "enableNOAA", "bool", title: "Feed 1: NWS / NOAA Official Alerts", defaultValue: true, submitOnChange: true
                 if (enableNOAA) {
-                    input "noaaTriggersHardware", "bool", title: "Allow official NWS alerts to trigger your physical Warning & Alarm switches", defaultValue: false, description: "<i>Plain English: if the National Weather Service issues a real Tornado Warning for your location, your sirens/switches fire even if your backyard sensors haven't noticed anything yet.</i>"
+                    input "noaaTriggersHardware", "bool", title: "Let NWS products also drive your hazard states and switches", defaultValue: false, description: "<i>Plain English: NWS products always get their own notifications (Notification Center, 'Official NWS products'). With this ON, an NWS warning for a hazard this app tracks (e.g. Severe Thunderstorm Warning, Flood Warning, Freeze Warning) also turns that hazard's WARNING/ALARM switches on even if your station has not seen it yet. OFF = your switches follow your own sensors only.</i>"
                 }
                 input "enableAutoCal", "bool", title: "Feed 2: Auto-Calibrate Pressure from Nearest Official Station", defaultValue: true, submitOnChange: true
                 if (settings.enableAutoCal) {
@@ -624,7 +652,12 @@ def configPage() {
         
         section("<b>Advanced Physics & Calibration Modules</b>") {
             paragraph "<i>These modules separate a hobbyist weather station from a professional meteorological instrument.</i>"
-            input "pressOffset", "decimal", title: "Barometric MSLP Offset (inHg) - Manual", defaultValue: 0.0, description: "<i>Plain English: weather math needs SEA-LEVEL pressure, but your station reports pressure at YOUR elevation, which is lower. This number bridges the gap. Easiest: enable Auto-Calibration above and skip this. Manual method: look up the latest METAR for your nearest airport (aviationweather.gov). Find the group starting with 'A' followed by 4 digits, e.g. <b>A2992</b> = 29.92 inHg (that is the altimeter setting). Subtract your station's current relative pressure from it. Example: METAR shows A2992 and your Live Data shows 26.51, so enter <b>3.41</b>. A manual value here always overrides auto-calibration.</i>"
+            input "pressureSource", "enum", title: "Pressure reading to use", options: ["auto": "Station (absolute) pressure if the sensor has it (recommended)", "relative": "Relative / sea-level pressure only"], defaultValue: "auto", description: "<i>Plain English: station pressure is what the barometer really measures. The app turns it into a sea-level value itself with the NWS altimeter formula and your elevation, and measures pressure rises/falls on the raw reading, so calibration never shows up as a fake pressure jump.</i>"
+            input "stationElevationFt", "decimal", title: "Station elevation (feet, optional)", required: false, description: "<i>Plain English: leave blank and the app learns it by comparing your station pressure with the nearest airport (median of recent pulls), or uses the NWS forecast grid elevation. Enter it only if you know it. ${siteElevationM() != null ? 'Now using <b>' + Math.round(siteElevationM() * 3.28084) + ' ft</b> (' + siteElevationSource() + ').' : 'Not known yet.'}</i>"
+            input "pressOffset", "decimal", title: "Barometric MSLP Offset (inHg) - Manual, relative-pressure sensors only", defaultValue: 0.0, description: "<i>Plain English: only used when your sensor has no station (absolute) pressure. Look up your nearest airport METAR (aviationweather.gov), find the 'A' group, e.g. <b>A2992</b> = 29.92 inHg, and subtract your station's relative pressure. A manual value here overrides auto-calibration.</i>"
+            input "windUnit", "enum", title: "Wind speed unit your sensor reports", options: ["mph": "mph", "kmh": "km/h", "ms": "m/s", "kn": "knots"], required: false, description: "<i>Blank = mph on a °F hub, km/h on a °C hub. All thresholds in this app are in mph.</i>"
+            input "rainUnit", "enum", title: "Rain unit your sensor reports", options: ["in": "inches", "mm": "millimetres"], required: false, description: "<i>Blank = inches on a °F hub, mm on a °C hub. Applies to rain rate, daily and weekly totals.</i>"
+            input "distUnit", "enum", title: "Lightning distance unit your sensor reports", options: ["mi": "miles", "km": "kilometres"], required: false, description: "<i>Blank = miles on a °F hub, km on a °C hub.</i>"
             
             input "irrigationSwitch", "capability.switch", title: "Irrigation / Sprinkler System Switch (Optional Guard)", required: false, description: "<i>Plain English: map your sprinkler controller's switch here. While it's on (and for 60 minutes after), the app ignores soil moisture spikes and 'first drop' wetness so a sprinkler cycle can never look like a storm or flood.</i>"
             
@@ -645,26 +678,22 @@ def configPage() {
             input "enableWBGT", "bool", title: "Enable Wet-Bulb Globe Temperature (WBGT)", defaultValue: true, description: "Calculates a proxy utilizing Temp, Hum, Wind, and Solar Radiation to measure true heat stress in direct sunlight."
             
             // [SCIENCE: KINETIC AIR DENSITY & STRUCTURAL LOAD]
-            input "enableKineticWind", "bool", title: "Enable Kinetic Air Density & Structural Wind Load", defaultValue: true, description: "Tracks the physical mass (kg/m³) of the air and converts raw wind speed into dynamic Structural Load pressure (lb/ft² or Pascals). Applies directly to Tornado/Storm threat arrays."
+            input "enableKineticWind", "bool", title: "Enable Air Density & Wind Pressure", defaultValue: true, description: "Air density (kg/m³) from temperature, humidity and station pressure, and the dynamic wind pressure of the peak gust (lb/ft² or Pa). Shown for information and used to weight storm wind."
             
             // [SCIENCE: STORM VECTORING]
             input "enableStormVectoring", "bool", title: "Enable Storm Intercept Vectoring (Approach Velocity)", defaultValue: true, description: "Tracks the distance of lightning strikes over time to calculate approach velocity (MPH) and Estimated Time of Arrival (ETA). Filters out random residential sensor 'ghost' strikes via historical averaging."
             
             // [SCIENCE: GRAVITY WAVES]
-            input "enableGravityWave", "bool", title: "Enable Atmospheric Gravity Wave Detection", defaultValue: true, description: "Analyzes micro-oscillations in barometric pressure to detect massive supercell updrafts before they arrive."
+            input "enableGravityWave", "bool", title: "Show pressure oscillation indicator", defaultValue: true, description: "Flags repeated small pressure swings on the dashboard. Information only since 2.0: a single backyard barometer cannot identify gravity waves or supercells, so it no longer adds to any score."
             
             // [SCIENCE: DRY MICROBURST]
             input "enableDryMicroburst", "bool", title: "Enable Dry Microburst / Virga Detection", defaultValue: true, description: "Looks for massive Dew Point spreads combined with sudden evaporative cooling (Temp crashes) and Wind Spikes to detect straight-line winds."
             
-            // [SCIENCE: EMI/EMP GUARD]
-            input "enableEMIGuard", "bool", title: "Enable EMI/EMP Sensor Freeze Guard", defaultValue: true, description: "If a lightning strike occurs within 3 miles and your sensors immediately go stale, the system flags it as Electromagnetic Interference rather than hardware failure, protecting the 'Dying Breath' failover."
-            
-            input "enableEyeOfStorm", "bool", title: "Enable 'Eye of the Storm' Barometric Lock", defaultValue: true, description: "Refuses to clear an active ALARM if barometric pressure is dangerously low (<29.60) and stable."
-            input "enableDyingBreath", "bool", title: "Enable 'Dying Breath' Sensor Failover", defaultValue: true, description: "If local sensors go offline during an ALARM, the system assumes they were destroyed, latches the alarm ON, and fails over to cloud telemetry."
+            paragraph "<i>Sensor dropouts (2.0): when a sensor goes stale or reads an impossible value, only the hazards that need it pause, and they keep their current state (an active alarm is not cleared by a dead sensor). The Sensor offline notification tells you.</i>"
             
             input "enableHardwareFilter", "bool", title: "Enable Hardware Anomaly Rejection", defaultValue: true
             input "enableThermalSmoothing", "bool", title: "Thermal Smoothing (Sun-Spike Protection)", defaultValue: true
-            input "staleDataTimeout", "number", title: "Stale Data Timeout (Minutes)", defaultValue: 30
+            input "staleDataTimeout", "number", title: "Stale Data Timeout (Minutes)", defaultValue: 30, description: "<i>Per sensor (2.0): a device with no update for this long is treated as offline. Only the hazards that need it pause.</i>"
         }
         
         section("<b>DEFCON Watchdog Polling</b>") {
@@ -718,13 +747,14 @@ def speakerMappingPage() {
 def dnaConfigPage() {
     return dynamicPage(name: "dnaConfigPage", title: "<b>Threat DNA Granular Mapping</b>", install: false, uninstall: false) {
         
+        section() {
+            paragraph "<div style='font-size:12px; color:#555; background:#fff8e6; border-radius:4px; padding:8px;'><b>2.0:</b> the local Tornado and Tropical engines are gone. A backyard station cannot see a tornado forming or a hurricane approaching (that takes radar and satellites), and their scores fired on ordinary wind and pressure. Tornado, hurricane and tropical storm products now come from the NWS as their own notifications (Notification Center, 'Official NWS products'). Switches you mapped to the old Tornado/Tropical engines were turned off and are no longer used.</div>"
+        }
         def dnas = [
-            [id: "Tornado", icon: "🌪️", wTTS: "Warning. Elevated probability of tornado conditions.", aTTS: "Critical Alert. Tornado conditions detected locally.", plain: "Fires when pressure is crashing violently while winds swing direction hard, or when official NWS Tornado Warnings cover your location. WARNING means the ingredients are assembling; ALARM means it is effectively on top of you. Treat ALARMs here as shelter-now events."],
             [id: "Thunderstorm", icon: "⛈️", wTTS: "Warning. Elevated probability of severe thunderstorms.", aTTS: "Critical Alert. Severe thunderstorm conditions actively detected.", plain: "Fires on the gust-front fingerprint (pressure jump + temp crash + wind spike), nearby lightning ramping up or approaching, 58+ mph gusts, or the first drops hitting the piezo rain head. This is your best engine for pop-up summer storms."],
             [id: "Flood", icon: "🌊", wTTS: "Warning. Elevated probability of flash flood conditions.", aTTS: "Critical Alert. Flash flood conditions detected locally.", plain: "Fires on heavy rain rates, big daily accumulation, or normal rain landing on already-saturated soil. Sprinklers cannot trigger it: soil moisture only counts alongside real gauge rain, and the irrigation guard mutes it during watering."],
             [id: "Freeze", icon: "❄️", wTTS: "Warning. Rapid trajectory towards freeze detected.", aTTS: "Alert. Freeze conditions actively occurring.", plain: "WARNING when temperature is on a trajectory to hit 32°F within hours (pipe/plant protection lead time). ALARM at or below freezing. Freezing rain gets its own ICE ALARM: liquid rain + sub-freezing wet-bulb = ice glazing everything on contact. Because a backyard sensor can't tell freezing rain from wet snow, ICE ALARM needs the airport TAF, an NWS ice product or the NWS forecast to agree; otherwise it is an ICE WARNING. Routine freezes are muted while a freeze is expected; ice never is."],
             [id: "SevereHeat", icon: "🔥", wTTS: "Warning. High heat index detected. Caution advised.", aTTS: "Critical Alert. Severe heat index conditions detected locally.", plain: "Based on WBGT, the heat-stress standard used by the military and sports medicine (temp + humidity + sun + wind). Answers 'is it dangerous to work outside in the sun right now,' which plain temperature can't."],
-            [id: "Tropical", icon: "🌀", wTTS: "Warning. Tropical cyclone signatures detected.", aTTS: "Critical Alert. Deep tropical cyclone conditions actively impacting location.", plain: "Deep, sustained sea-level pressure drops with strong wind and heavy moisture. Requires calibrated pressure to function (check the calibration badge on the main page)."],
             [id: "FireWeather", icon: "🔥🌲", wTTS: "Warning. Elevated fire weather conditions.", aTTS: "Critical Alert. Extreme Red Flag fire weather actively detected. No outdoor sparks.", plain: "The official Red Flag recipe: bone-dry fuel (little rain in 7 days), thirsty air (very low humidity or high vapor pressure deficit), and wind 25+ mph. When this alarms, any spark spreads fast."]
         ]
         
@@ -770,7 +800,7 @@ def initialize() {
     // re-detected and re-pushed seconds later. Event history and in-flight
     // forensics survive now; only genuinely new hazards get fresh entries.
     def m = state.threatMatrix ?: [:]
-    ["Tornado", "Thunderstorm", "Flood", "Freeze", "SevereHeat", "Tropical", "FireWeather"].each { haz ->
+    hazardIds().each { haz ->
         if (!m[haz]) m[haz] = [threat: 0, prob: 0, conf: 0, state: "Clear", howWhy: "Initializing...", mathEx: "Awaiting calculation cycle...", lastTrig: 0, history: [], currentEvent: null]
     }
     state.threatMatrix = m
@@ -785,7 +815,7 @@ def initialize() {
     if (state.globalAllClearPending == null) state.globalAllClearPending = false
     state.emiActive = false
     state.noaaFailCount = 0
-    state.noaaAlertsMap = [:]
+    migrateTo2()
     if (!state.noaaGlobalAlerts) state.noaaGlobalAlerts = "Initializing broadcast listener..."
     
     if (!state.lastHeartbeat) state.lastHeartbeat = now()
@@ -801,17 +831,17 @@ def initialize() {
     if (!state.sevenDayRain) state.sevenDayRain = []
     
     if (!state.currentDayRain) state.currentDayRain = 0.0
-    if (!state.currentDateStr) state.currentDateStr = new Date().format("yyyy-MM-dd", location.timeZone)
+    if (!state.currentDateStr) state.currentDateStr = new Date(now()).format("yyyy-MM-dd", location.timeZone)
     
     if (!state.eventActive) state.eventActive = false
     if (!state.activeEventStats) state.activeEventStats = [:]
     
-    subscribeMulti(sensorTemp, ["temperature", "tempf"], "tempHandler")
+    subscribeMulti(sensorTemp, tempAttrs(), "tempHandler")
     subscribeMulti(sensorHum, ["humidity"], "stdHandler")
-    subscribeMulti(sensorPress, ["pressure", "Baromrelin", "baromrelin", "Baromabsin", "baromabsin", "barometricPressure"], "pressureHandler")
+    subscribeMulti(sensorPress, (pressRelAttrs() + pressAbsAttrs()).unique(), "pressureHandler")
     subscribeMulti(sensorWind, ["windSpeed", "windspeedmph", "wind"], "windHandler")
     subscribeMulti(sensorWindDir, ["windDirection", "winddir", "windDir"], "windDirHandler")
-    subscribeMulti(sensorLightning, ["lightningCount", "lightningDistance", "distance"], "lightningHandler")
+    subscribeMulti(sensorLightning, lightningHasCount() ? ["lightningCount"] : ["lightningDistance", "distance"], "lightningHandler")
     subscribeMulti(sensorRain, ["rainRate", "hourlyrainin", "precipRate", "hourlyRain"], "stdHandler")
     subscribeMulti(sensorRain, ["raining"], "stdHandler")                    // WS90 piezo instant rain flag (native first-drop)
     subscribeMulti(sensorWind, ["windGust", "windgustmph", "gust"], "stdHandler") // Gusts trigger evaluation; leading indicator of downbursts
@@ -877,9 +907,37 @@ def initialize() {
         logAction("🔒 LOCAL-ONLY MODE: Master internet switch is OFF. This app will make zero internet requests. All detection runs on local sensors only.")
     }
     
+    recordPressure()
     runEvery1Minute("evaluateMatrix") 
-    logAction("BMS Advanced Severe Weather Matrix Initialized.")
+    logAction("Advanced Severe Weather Detector 2.0 initialized.")
     evaluateMatrix()
+}
+
+// One-time upgrade from 1.x (schema 2). Runs on the first Done/initialize.
+def migrateTo2() {
+    if ((state.schema ?: 1) >= 2) return
+    def m = state.threatMatrix ?: [:]
+    ["Tornado", "Tropical"].each { haz ->
+        m.remove(haz)
+        safeOff(settings["switch${haz}Warn"]); safeOff(settings["switch${haz}Alarm"])
+    }
+    state.threatMatrix = m
+    // 1.x stored pressure with the calibration offset baked in; restart the
+    // series so the first 2.0 readings are not read as a pressure crash.
+    state.pressureHistory = []
+    state.remove("pressRaw3")
+    state.remove("pressSeriesKind")
+    state.remove("noaaAlertsMap")
+    state.remove("lastLightningCount")   // next count is a baseline, not strikes
+    state.remove("mslpWarned")
+    // A 1.0.0 Notification Center page saves its shown default ("any") on
+    // Done. Drop those so 2.0's "local sensors" default applies and an NWS
+    // product does not push twice (hazard row + NWS row).
+    settings.findAll { k, v -> k.toString() ==~ /n_[A-Za-z]+_source/ && v == "any" }.keySet().toList().each { k ->
+        try { app.removeSetting(k) } catch (e) {}
+    }
+    state.schema = 2
+    logAction("⬆ UPGRADED to 2.0: Tornado/Tropical local engines removed (now NWS products), pressure history restarted on the new pressure series.")
 }
 
 // === BUTTON HANDLER ===
@@ -943,6 +1001,8 @@ void appButtonHandler(btn) {
         state.remove("forecastFailCount")
         state.remove("lastLightningCount")
         state.remove("lastEngineError")
+        ["nwsAlerts", "nwsNotified", "lastNwsGoodPoll", "nwsCoverage", "nwsCoverageCheck", "elevSamples", "elevLearnedM", "gridElevationM",
+         "sensorHealth", "sensorDown", "devSeen", "pressSeriesKind", "currentAltimeter", "pressureMode", "siteLat", "siteLon", "noaaAlertsMap"].each { state.remove(it) }
         
         state.remove("lastEventReport")
         state.remove("activeEventStats")
@@ -963,7 +1023,7 @@ void appButtonHandler(btn) {
         state.probHistory = []
         
         def m = [:]
-        ["Tornado", "Thunderstorm", "Flood", "Freeze", "SevereHeat", "Tropical", "FireWeather"].each { haz ->
+        hazardIds().each { haz ->
             m[haz] = [threat: 0, prob: 0, conf: 0, state: "Clear", howWhy: "System Reset...", mathEx: "Awaiting next cycle...", lastTrig: now(), history: [], currentEvent: null]
         }
         state.threatMatrix = m
@@ -1041,6 +1101,7 @@ def pollSensors() {
 def pollNOAA() {
     if (settings.enableInternet == false) return
     if (settings.enableNOAA != true) return
+    if (!nwsCovered()) return
     if (state.cloudOffline && state.cloudRetryTime && now() < state.cloudRetryTime) return 
     state.lastNoaaPollTime = now()
 
@@ -1071,49 +1132,411 @@ def noaaResponseHandler(response, data) {
     def json = parseJsonRobust(response)
     if (json == null) { logAction("⚠ Response could not be parsed; skipping this cycle."); return }
     
-    def alerts = json?.features ?: []
-    def parsedAlerts = ["Tornado": "Clear", "Thunderstorm": "Clear", "Flood": "Clear", "Freeze": "Clear", "SevereHeat": "Clear", "Tropical": "Clear", "FireWeather": "Clear"]
-    def globalAlertsHtml = ""
-    
-    alerts.each { alert ->
-        def event = alert.properties?.event ?: ""
-        def headline = alert.properties?.headline ?: event
-        // Escaped: this string is rendered as HTML on the dashboard.
-        globalAlertsHtml += "<b>${escapeHtml(event)}</b>: ${escapeHtml(headline)}<br><br>"
-        
-        if (event.contains("Tornado Warning")) parsedAlerts["Tornado"] = "ALARM"
-        else if (event.contains("Tornado Watch") && parsedAlerts["Tornado"] != "ALARM") parsedAlerts["Tornado"] = "WARNING"
-        if (event.contains("Severe Thunderstorm Warning")) parsedAlerts["Thunderstorm"] = "ALARM"
-        else if (event.contains("Severe Thunderstorm Watch") && parsedAlerts["Thunderstorm"] != "ALARM") parsedAlerts["Thunderstorm"] = "WARNING"
-        if (event.contains("Flash Flood") || event.contains("Flood Warning")) parsedAlerts["Flood"] = "ALARM"
-        else if (event.contains("Flood Watch") || event.contains("Flood Advisory")) parsedAlerts["Flood"] = "WARNING"
-        // FREEZE/ICE mapping (fork 1.0.0). Winter Storm Warnings and Winter
-        // Weather Advisories are snow products; mapping them to Freeze sent
-        // "Freeze ALARM" pushes for snowstorms, and the expected-freeze mute
-        // would have silenced them. They now count only when their text
-        // calls for freezing rain/drizzle or ice accumulation (then as ICE).
-        // All NWS products still show in the NWS alert list on the dashboard.
-        def descL = "${alert.properties?.headline ?: ''} ${alert.properties?.description ?: ''}".toLowerCase()
-        def mentionsIce = descL.contains("freezing rain") || descL.contains("freezing drizzle") || descL.contains("ice accumulation")
-        def iceEvent = event.contains("Ice Storm") || event.contains("Freezing Rain") || event.contains("Freezing Drizzle")
-        def winterIce = (event.contains("Winter Storm Warning") || event.contains("Winter Weather Advisory") || event.contains("Winter Storm Watch")) && mentionsIce
-        if (iceEvent || winterIce) parsedAlerts["FreezeIce"] = true
-        if (event.contains("Freeze Warning") || event.contains("Ice Storm Warning") || (event.contains("Winter Storm Warning") && winterIce)) parsedAlerts["Freeze"] = "ALARM"
-        else if ((event.contains("Freeze Watch") || event.contains("Frost Advisory") || iceEvent || winterIce) && parsedAlerts["Freeze"] != "ALARM") parsedAlerts["Freeze"] = "WARNING"
-        if (event.contains("Excessive Heat Warning")) parsedAlerts["SevereHeat"] = "ALARM"
-        else if (event.contains("Heat Advisory")) parsedAlerts["SevereHeat"] = "WARNING"
-        if (event.contains("Hurricane Warning") || event.contains("Tropical Storm Warning")) parsedAlerts["Tropical"] = "ALARM"
-        else if (event.contains("Hurricane Watch") || event.contains("Tropical Storm Watch")) parsedAlerts["Tropical"] = "WARNING"
-        if (event.contains("Red Flag Warning") || event.contains("Fire Weather Warning")) parsedAlerts["FireWeather"] = "ALARM"
-        else if (event.contains("Fire Weather Watch")) parsedAlerts["FireWeather"] = "WARNING"
+    // 2.0: every product is matched by its EXACT NWS event name (table in
+    // nwsProducts()), keeps its own expiry, and is re-checked against the
+    // clock at every evaluation. A failed poll can no longer leave an expired
+    // warning latched, and an advisory can no longer downgrade a warning.
+    def list = []
+    (json?.features ?: []).each { f ->
+        def pr = f?.properties
+        if (!pr) return
+        if ((pr.status ?: "Actual") != "Actual") return          // drop Test/Exercise/System
+        if (pr.messageType == "Cancel") return
+        def event = (pr.event ?: "").toString()
+        def info = nwsClassify(event, "${pr.headline ?: ''} ${pr.description ?: ''}")
+        def endMs = parseIsoMs(pr.ends) ?: parseIsoMs(pr.expires)
+        // /alerts/active still lists it: an "until further notice" product can
+        // outlive its expires time. Trust it until the next poll says otherwise.
+        if (endMs != null && endMs < now()) endMs = now() + 900000
+        def refs = []
+        (pr.references ?: []).each { rf -> if (rf?.identifier) refs << rf.identifier.toString() }
+        list << [id: (pr.id ?: f.id ?: "${event}-${pr.sent}").toString(), event: escapeHtml(event.take(60)), grp: info.grp, tier: info.tier,
+                 haz: info.haz, ice: info.ice, severity: (pr.severity ?: "").toString(), msgType: (pr.messageType ?: "Alert").toString(),
+                 headline: escapeHtml((pr.headline ?: event).toString().take(200)), text: (pr.headline ?: event).toString().replaceAll(/[\r\n]+/, " ").take(200),
+                 onset: parseIsoMs(pr.onset), ends: endMs, refs: refs]
     }
-    
-    if (globalAlertsHtml == "") globalAlertsHtml = "<i>No active national weather alerts for your area at this time.</i>"
-    state.noaaGlobalAlerts = globalAlertsHtml
-    state.noaaAlertsMap = parsedAlerts
-    evaluateMatrix()
+    state.nwsAlerts = list
+    state.lastNwsGoodPoll = now()
+    state.noaaGlobalAlerts = list ? list.collect { "<b>${it.event}</b>: ${it.headline}" }.join("<br><br>") : "<i>No active national weather alerts for your area at this time.</i>"
+    state.noaaAlertsMap = nwsHazardMap()
+    evaluateMatrix()              // hazard states (and the freeze-expected flag) first
+    dispatchNwsProducts(list)
 }
 
+// ==============================================================================
+// NWS PRODUCT TABLE (2.0)
+// grp = notification group, tier = WARNING (watch/advisory) or ALARM (warning),
+// haz = local hazard it corroborates (and may drive, if "NWS drives switches"
+// is on). Names follow the current NWS product list, including the Oct 2024
+// cold-product consolidation (Extreme Cold Warning / Cold Weather Advisory)
+// and the 2025 Extreme Heat rename; the retired names are kept so an office
+// still issuing them is understood.
+// ==============================================================================
+def nwsProducts() {
+    return [
+        "Tornado Warning": [grp: "tornado", tier: "ALARM"], "Tornado Watch": [grp: "tornado", tier: "WARNING"],
+        "Severe Thunderstorm Warning": [grp: "storm", tier: "ALARM", haz: "Thunderstorm"], "Severe Thunderstorm Watch": [grp: "storm", tier: "WARNING", haz: "Thunderstorm"],
+        "Extreme Wind Warning": [grp: "wind", tier: "ALARM"], "High Wind Warning": [grp: "wind", tier: "ALARM"], "High Wind Watch": [grp: "wind", tier: "WARNING"],
+        "Wind Advisory": [grp: "wind", tier: "WARNING"], "Dust Storm Warning": [grp: "wind", tier: "ALARM"], "Blowing Dust Warning": [grp: "wind", tier: "ALARM"],
+        "Dust Advisory": [grp: "wind", tier: "WARNING"], "Blowing Dust Advisory": [grp: "wind", tier: "WARNING"],
+        "Flash Flood Warning": [grp: "flood", tier: "ALARM", haz: "Flood"], "Flood Warning": [grp: "flood", tier: "ALARM", haz: "Flood"],
+        "Flash Flood Watch": [grp: "flood", tier: "WARNING", haz: "Flood"], "Flood Watch": [grp: "flood", tier: "WARNING", haz: "Flood"], "Flood Advisory": [grp: "flood", tier: "WARNING", haz: "Flood"],
+        "Freeze Warning": [grp: "freeze", tier: "ALARM", haz: "Freeze"], "Hard Freeze Warning": [grp: "freeze", tier: "ALARM", haz: "Freeze"],
+        "Freeze Watch": [grp: "freeze", tier: "WARNING", haz: "Freeze"], "Hard Freeze Watch": [grp: "freeze", tier: "WARNING", haz: "Freeze"], "Frost Advisory": [grp: "freeze", tier: "WARNING", haz: "Freeze"],
+        "Ice Storm Warning": [grp: "ice", tier: "ALARM", haz: "Freeze", ice: true], "Freezing Rain Advisory": [grp: "ice", tier: "WARNING", haz: "Freeze", ice: true],
+        "Winter Storm Warning": [grp: "winter", tier: "ALARM"], "Blizzard Warning": [grp: "winter", tier: "ALARM"], "Snow Squall Warning": [grp: "winter", tier: "ALARM"],
+        "Lake Effect Snow Warning": [grp: "winter", tier: "ALARM"], "Winter Storm Watch": [grp: "winter", tier: "WARNING"], "Winter Weather Advisory": [grp: "winter", tier: "WARNING"],
+        "Lake Effect Snow Watch": [grp: "winter", tier: "WARNING"], "Lake Effect Snow Advisory": [grp: "winter", tier: "WARNING"],
+        "Extreme Cold Warning": [grp: "cold", tier: "ALARM"], "Extreme Cold Watch": [grp: "cold", tier: "WARNING"], "Cold Weather Advisory": [grp: "cold", tier: "WARNING"],
+        "Wind Chill Warning": [grp: "cold", tier: "ALARM"], "Wind Chill Watch": [grp: "cold", tier: "WARNING"], "Wind Chill Advisory": [grp: "cold", tier: "WARNING"],
+        "Extreme Heat Warning": [grp: "heat", tier: "ALARM", haz: "SevereHeat"], "Excessive Heat Warning": [grp: "heat", tier: "ALARM", haz: "SevereHeat"],
+        "Extreme Heat Watch": [grp: "heat", tier: "WARNING", haz: "SevereHeat"], "Excessive Heat Watch": [grp: "heat", tier: "WARNING", haz: "SevereHeat"], "Heat Advisory": [grp: "heat", tier: "WARNING", haz: "SevereHeat"],
+        "Red Flag Warning": [grp: "fire", tier: "ALARM", haz: "FireWeather"], "Fire Weather Watch": [grp: "fire", tier: "WARNING", haz: "FireWeather"],
+        "Extreme Fire Danger": [grp: "fire", tier: "ALARM", haz: "FireWeather"], "Fire Warning": [grp: "fire", tier: "ALARM"],
+        "Hurricane Warning": [grp: "tropical", tier: "ALARM"], "Hurricane Watch": [grp: "tropical", tier: "WARNING"],
+        "Tropical Storm Warning": [grp: "tropical", tier: "ALARM"], "Tropical Storm Watch": [grp: "tropical", tier: "WARNING"],
+        "Storm Surge Warning": [grp: "tropical", tier: "ALARM"], "Storm Surge Watch": [grp: "tropical", tier: "WARNING"],
+        "Dense Fog Advisory": [grp: "air", tier: "WARNING"], "Freezing Fog Advisory": [grp: "air", tier: "WARNING"], "Dense Smoke Advisory": [grp: "air", tier: "WARNING"],
+        "Air Quality Alert": [grp: "air", tier: "WARNING"], "Ashfall Warning": [grp: "air", tier: "ALARM"], "Ashfall Advisory": [grp: "air", tier: "WARNING"],
+        "Civil Emergency Message": [grp: "civil", tier: "ALARM"], "Evacuation Immediate": [grp: "civil", tier: "ALARM"], "Shelter In Place Warning": [grp: "civil", tier: "ALARM"],
+        "Law Enforcement Warning": [grp: "civil", tier: "ALARM"], "Hazardous Materials Warning": [grp: "civil", tier: "ALARM"], "Nuclear Power Plant Warning": [grp: "civil", tier: "ALARM"],
+        "Avalanche Warning": [grp: "civil", tier: "ALARM"], "Avalanche Watch": [grp: "civil", tier: "WARNING"], "Avalanche Advisory": [grp: "civil", tier: "WARNING"],
+        "Tsunami Warning": [grp: "civil", tier: "ALARM"], "Tsunami Watch": [grp: "civil", tier: "WARNING"], "Tsunami Advisory": [grp: "civil", tier: "WARNING"],
+        "Earthquake Warning": [grp: "civil", tier: "ALARM"], "Volcano Warning": [grp: "civil", tier: "ALARM"], "Radiological Hazard Warning": [grp: "civil", tier: "ALARM"],
+        "Local Area Emergency": [grp: "civil", tier: "ALARM"], "Child Abduction Emergency": [grp: "civil", tier: "WARNING"], "911 Telephone Outage": [grp: "civil", tier: "WARNING"],
+        "Lake Wind Advisory": [grp: "wind", tier: "WARNING"],
+        "Special Weather Statement": [grp: "other", tier: "WARNING"]
+    ]
+}
+
+def nwsGroups() {
+    return [[id: "tornado", name: "Tornado", icon: "🌪️"], [id: "storm", name: "Severe Thunderstorm", icon: "⛈️"], [id: "wind", name: "Wind & Dust", icon: "💨"],
+            [id: "flood", name: "Flood", icon: "🌊"], [id: "freeze", name: "Freeze & Frost", icon: "❄️"], [id: "ice", name: "Ice Storm", icon: "🧊"],
+            [id: "winter", name: "Winter Storm & Snow", icon: "🌨️"], [id: "cold", name: "Extreme Cold & Wind Chill", icon: "🥶"], [id: "heat", name: "Heat", icon: "🔥"],
+            [id: "fire", name: "Fire Weather", icon: "🔥🌲"], [id: "tropical", name: "Hurricane & Tropical", icon: "🌀"], [id: "air", name: "Fog, Smoke & Air Quality", icon: "🌫️"],
+            [id: "civil", name: "Civil Emergency", icon: "📢"], [id: "other", name: "Statements & other products", icon: "📄"]]
+}
+
+def nwsClassify(String event, String text) {
+    def info = nwsProducts()[event]
+    def r = info ? [grp: info.grp, tier: info.tier, haz: info.haz, ice: (info.ice == true)] : [grp: "other", tier: (event.endsWith("Warning") ? "ALARM" : "WARNING"), haz: null, ice: false]
+    // Winter products route as ICE when their text calls for freezing rain
+    // or ice accumulation (fork 1.0.0 rule, kept).
+    if (r.grp == "winter") {
+        def t = (text ?: "").toLowerCase()
+        if (t.contains("freezing rain") || t.contains("freezing drizzle") || t.contains("ice accumulation")) { r.ice = true; r.haz = "Freeze" }
+    }
+    return r
+}
+
+// Alerts still in force right now (expiry re-checked every call). Alerts
+// are not trusted at all once the last good poll is 30+ minutes old, since a
+// cancellation could have been missed.
+def nwsActiveAlerts() {
+    if (settings.enableInternet == false || settings.enableNOAA != true) return []
+    if ((now() - (state.lastNwsGoodPoll ?: 0)) > 1800000) return []
+    return (state.nwsAlerts ?: []).findAll { it.ends == null || it.ends > now() }
+}
+
+// Hazard STATE only counts a product once it is in effect (onset reached).
+// A Freeze Warning issued at 3 pm for 1 am must not switch Freeze to ALARM
+// at 55°F; its notification still goes out when it is issued.
+def nwsHazardStatus(String haz) {
+    def best = "Clear"
+    nwsActiveAlerts().each { a -> if (a.haz == haz && (a.onset == null || (a.onset as Long) <= now())) { if (a.tier == "ALARM") best = "ALARM"; else if (best == "Clear") best = "WARNING" } }
+    return best
+}
+
+def nwsIceActive() { return nwsActiveAlerts().any { it.ice && (it.onset == null || (it.onset as Long) <= now()) } }
+
+def nwsHazardMap() {
+    def m = [:]
+    hazardIds().each { m[it] = nwsHazardStatus(it) }
+    m["FreezeIce"] = nwsIceActive()
+    nwsActiveAlerts().each { a -> if (a.haz) m["Raw_${a.haz}"] = ((m["Raw_${a.haz}"] ? m["Raw_${a.haz}"] + "<br>" : "") + "<b>${a.event}</b>: ${a.headline}") }
+    return m
+}
+
+// One notification per NEW product. Updates/extensions of a product you were
+// already told about (NWS sends them as new ids that reference the old one)
+// are logged, not pushed.
+def dispatchNwsProducts(List list) {
+    def seen = state.nwsNotified ?: [:]
+    def endOf = { v -> (v instanceof Map ? v.end : v) as Long }
+    // prune ids that expired more than a day ago
+    seen = seen.findAll { k, v -> endOf(v) > now() - 86400000 }
+    list.each { a ->
+        if (seen.containsKey(a.id)) return
+        def endMark = (a.ends ?: (now() + 86400000)) as Long
+        // Winter products that call for freezing rain go to the Ice Storm rows.
+        def key = "nws_${a.ice ? 'ice' : a.grp}_${a.tier == 'ALARM' ? 'warn' : 'watch'}"
+        // An "update" is a referenced product for the SAME row that was really
+        // delivered. A watch upgraded to a warning references the watch too,
+        // but it is a different row (and the watch may never have been sent),
+        // so it is news.
+        def isUpdate = a.refs.any { rid -> def pv = seen[rid]; pv instanceof Map && pv.key == key && pv.sent == true }
+        a.refs.each { rid -> def pv = seen[rid]; if (pv instanceof Map && pv.key == key) pv.end = endMark }
+        if (isUpdate && !nBool(notifyEvent(key) ?: [:], "updates")) {
+            seen[a.id] = [end: endMark, key: key, sent: true]
+            notifyLog("NWS update (not pushed): ${a.event}")
+            return
+        }
+        def until = a.ends ? new Date(a.ends as Long).format("EEE h:mm a", location.timeZone) : null
+        def sent = dispatchNotification(key, [haz: null, source: "NWS", from: "none", to: a.tier, nws: a,
+                                   detail: "${a.text ? a.text : a.event}${until && !(a.text ?: '').contains(' until ') ? ' (until ' + until + ')' : ''}"])
+        seen[a.id] = [end: endMark, key: key, sent: (sent == true)]
+    }
+    state.nwsNotified = seen
+}
+
+// ==============================================================================
+// SITE, PRESSURE AND SENSOR FOUNDATION (2.0)
+// ==============================================================================
+def hazardIds() { return ["Thunderstorm", "Flood", "Freeze", "SevereHeat", "FireWeather"] }
+def tempAttrs() { return ["temperature", "tempf"] }
+def pressAbsAttrs() { return ["pressureAbs", "baromabsin", "Baromabsin", "absolutePressure", "stationPressure"] }
+def pressRelAttrs() { return ["pressure", "baromrelin", "Baromrelin", "barometricPressure"] }
+def windAttrs() { return ["windSpeed", "windspeedmph", "wind"] }
+def gustAttrs() { return ["windGust", "windgustmph", "gust"] }
+def windDirAttrs() { return ["windDirection", "winddir", "windDir"] }
+def rainRateAttrs() { return ["rainRate", "hourlyrainin", "precipRate", "hourlyRain"] }
+def luxAttrs() { return ["illuminance", "solarradiation", "solarRadiation"] }
+
+// Pressure in any common unit -> inHg (metric hubs report hPa or kPa).
+def normPressInHg(Double v) {
+    if (v == null) return null
+    if (v > 500.0) return v / 33.8639        // hPa / mbar
+    if (v > 50.0 && v < 120.0) return v * 0.2953  // kPa
+    return v
+}
+
+def windUnitFactor() {
+    def u = settings.windUnit ?: (isMetric() ? "kmh" : "mph")
+    return u == "kmh" ? 0.621371 : (u == "ms" ? 2.23694 : (u == "kn" ? 1.15078 : 1.0))
+}
+def distUnitFactor() {
+    def u = settings.distUnit ?: (isMetric() ? "km" : "mi")
+    return u == "km" ? 0.621371 : 1.0
+}
+def rainUnitFactor() {
+    def u = settings.rainUnit ?: (isMetric() ? "mm" : "in")
+    return u == "mm" ? (1.0 / 25.4) : 1.0
+}
+
+// NWS altimeter setting (weather.gov/media/epz/wxcalc/altimeterSetting.pdf):
+// A = (Ps - 0.3) * (1 + k*H/(Ps - 0.3)^n)^(1/n), hPa and metres,
+// n = 0.190284, k = 1013.25^n * 0.0065 / 288. Because A^n = (Ps-0.3)^n + k*H,
+// the formula inverts exactly for the station pressure or the elevation.
+def altN() { return 0.190284d }
+def altK() { return Math.pow(1013.25d, altN()) * 0.0065d / 288.0d }
+def altimeterFromStation(Double psInHg, Double elevM) {
+    def ps = psInHg * 33.8639d - 0.3d
+    if (ps <= 0) return null
+    return (ps * Math.pow(1.0d + altK() * elevM / Math.pow(ps, altN()), 1.0d / altN())) / 33.8639d
+}
+def stationFromAltimeter(Double altInHg, Double elevM) {
+    def base = Math.pow(altInHg * 33.8639d, altN()) - altK() * elevM
+    if (base <= 0) return null
+    return (Math.pow(base, 1.0d / altN()) + 0.3d) / 33.8639d
+}
+def impliedElevationM(Double altInHg, Double psInHg) {
+    def ps = psInHg * 33.8639d - 0.3d
+    if (ps <= 0) return null
+    return (Math.pow(altInHg * 33.8639d, altN()) - Math.pow(ps, altN())) / altK()
+}
+
+// Elevation used to turn station pressure into sea-level terms: your entry,
+// else learned from airport comparisons (median), else the NWS forecast grid.
+def siteElevationM() {
+    if (settings.stationElevationFt != null && settings.stationElevationFt.toString() != "") {
+        try { return (settings.stationElevationFt as Double) * 0.3048d } catch (e) {}
+    }
+    if (state.elevLearnedM != null && (state.elevSamples ?: []).size() >= 3) return state.elevLearnedM as Double
+    if (state.gridElevationM != null) return state.gridElevationM as Double
+    return null
+}
+def siteElevationSource() {
+    if (settings.stationElevationFt != null && settings.stationElevationFt.toString() != "") return "your setting"
+    if (state.elevLearnedM != null && (state.elevSamples ?: []).size() >= 3) return "learned from ${state.calStationId ?: 'airport'} (${(state.elevSamples ?: []).size()} pulls)"
+    if (state.gridElevationM != null) return "NWS forecast grid"
+    return null
+}
+
+def median(List xs) {
+    if (!xs) return null
+    def s = xs.collect { it as Double }.sort()
+    def n = s.size()
+    return n % 2 ? s[(int) (n / 2)] : (s[n / 2 - 1] + s[n / 2]) / 2.0d
+}
+
+// Station (absolute) pressure in inHg, or null if the sensor only reports
+// relative / sea-level-adjusted pressure.
+def readStationPressure() {
+    if (settings.pressureSource == "relative") return null
+    def v = getFloat(sensorPress, pressAbsAttrs(), null)
+    if (v == null) return null
+    def inHg = normPressInHg(v as Double)
+    return (inHg >= 15.0 && inHg <= 32.5) ? inHg : null
+}
+def readRelativePressure() {
+    def v = getFloat(sensorPress, pressRelAttrs(), null)
+    if (v == null) return null
+    def inHg = normPressInHg(v as Double)
+    return (inHg >= 15.0 && inHg <= 32.5) ? inHg : null
+}
+
+// The series pressure TENDENCY is measured on. It must never contain a
+// calibration offset: the 1.x app added the auto-cal offset before storing,
+// so every 3-hourly re-calibration injected a fake pressure step.
+def pressureSeriesValue() {
+    def ps = readStationPressure()
+    if (ps != null) return [kind: "station", v: ps]
+    def rel = readRelativePressure()
+    return rel != null ? [kind: "relative", v: rel] : null
+}
+
+// Device freshness: newest of Hubitat's last-activity time and the last
+// event this app saw from it. null = no way to tell (treated as fresh).
+def deviceAgeMin(dev) {
+    if (!dev) return null
+    def t = 0L
+    try { def la = dev.getLastActivity(); if (la) t = (la instanceof Date) ? la.getTime() : (la as Long) } catch (e) {}
+    def seen = (state.devSeen ?: [:])[dev.id?.toString()]
+    if (seen) t = Math.max(t, seen as Long)
+    return t > 0 ? (now() - t) / 60000.0d : null
+}
+def markSeen(evt) {
+    try { def m = state.devSeen ?: [:]; m[evt.deviceId.toString()] = now(); state.devSeen = m } catch (e) {}
+    markActive()
+}
+
+def readSensors() {
+    def staleMin = ((settings.staleDataTimeout ?: 30) as Double)
+    def health = [:]
+    def rd = [health: health]
+    // Devices that can legitimately sit silent for hours (a standalone rain
+    // gauge on a dry day, a lightning detector) get a 24 h window; their
+    // drivers often send events only when a value changes.
+    def quietRoles = ["rain", "lightning"]
+    def one = { String role, dev, List attrs, Double lo, Double hi, Closure conv ->
+        if (!dev) { health[role] = [ok: null, why: "not configured"]; return null }
+        def age = deviceAgeMin(dev)
+        def lim = (role in quietRoles) ? Math.max(staleMin, 1440.0d) : staleMin
+        if (age != null && age > lim) { health[role] = [ok: false, why: "stale (no update for ${Math.round(age)} min)", age: age]; return null }
+        def v = getFloat(dev, attrs, null)
+        if (v == null) { health[role] = [ok: false, why: "no reading", age: age]; return null }
+        def d = conv ? conv(v as Double) : (v as Double)
+        if (d == null || d.isNaN() || d < lo || d > hi) { health[role] = [ok: false, why: "implausible value ${v}", age: age]; return null }
+        health[role] = [ok: true, why: "ok", age: age]
+        return d
+    }
+    def cToF = { Double c -> isMetric() ? (c * 9.0d / 5.0d + 32.0d) : c }
+    rd.t = one("temp", sensorTemp, tempAttrs(), -80.0d, 140.0d, cToF)
+    rd.h = one("hum", sensorHum, ["humidity"], 1.0d, 100.0d, null)
+    if (rd.h == null && sensorHum) {
+        // Many hygrometers report 100.x in fog; clamp rather than reject.
+        def hv = getFloat(sensorHum, ["humidity"], null)
+        if (hv != null && (hv as Double) > 100.0d && (hv as Double) <= 105.0d && health.hum?.why?.startsWith("implausible")) { rd.h = 100.0d; health.hum = [ok: true, why: "ok (clamped to 100%)"] }
+    }
+    rd.wind = one("wind", sensorWind, windAttrs(), 0.0d, 200.0d, { Double w -> w * windUnitFactor() })
+    rd.gust = sensorWind && health.wind?.ok ? (getFloat(sensorWind, gustAttrs(), null) != null ? (getFloat(sensorWind, gustAttrs(), null) as Double) * windUnitFactor() : null) : null
+    if (rd.gust != null && (rd.gust < 0 || rd.gust > 250)) rd.gust = null
+    rd.windDir = sensorWindDir ? one("windDir", sensorWindDir, windDirAttrs(), 0.0d, 360.0d, null) : null
+    rd.rain = one("rain", sensorRain, rainRateAttrs(), 0.0d, 30.0d, { Double x -> x * rainUnitFactor() })
+    rd.lux = one("lux", sensorLux, luxAttrs(), 0.0d, 250000.0d, null)
+    if (sensorLightning) {
+        def age = deviceAgeMin(sensorLightning)
+        health.lightning = (age != null && age > Math.max(staleMin, 1440.0d)) ? [ok: false, why: "stale (no update for ${Math.round(age)} min)", age: age] : [ok: true, why: "ok", age: age]
+    }
+    // Pressure: station pressure + elevation -> altimeter; else relative + offset.
+    def pAge = deviceAgeMin(sensorPress)
+    if (pAge != null && pAge > staleMin) {
+        health.press = [ok: false, why: "stale (no update for ${Math.round(pAge)} min)", age: pAge]
+        rd.pressMode = "unavailable"
+    } else {
+        rd.ps = readStationPressure()
+        def rel = readRelativePressure()
+        rd.rawP = rd.ps ?: rel
+        def elev = siteElevationM()
+        if (rd.ps != null && elev != null) { rd.alt = altimeterFromStation(rd.ps, elev); rd.pressMode = "station" }
+        else if (rel != null && getPressOffset() != 0.0) { rd.alt = rel + getPressOffset(); rd.pressMode = "offset" }
+        else if (rel != null && rel >= 28.5) { rd.alt = rel; rd.pressMode = "sensor" }   // sensor already sea-level adjusted
+        else rd.pressMode = (rd.rawP != null) ? "uncalibrated" : "unavailable"
+        health.press = rd.rawP != null ? [ok: true, why: rd.pressMode == "uncalibrated" ? "ok (no elevation yet, so no sea-level value)" : "ok", age: pAge] : [ok: false, why: "no reading", age: pAge]
+    }
+    return rd
+}
+
+// Sensor offline / back notifications. A role must stay bad for one more
+// stale period before it is reported, so a single slow upload is not news.
+def reportSensorHealth(Map health) {
+    def down = state.sensorDown ?: [:]
+    def names = [temp: "Temperature", hum: "Humidity", press: "Pressure", wind: "Wind", windDir: "Wind direction", rain: "Rain gauge", lux: "Solar/lux", lightning: "Lightning detector"]
+    health.each { role, hInfo ->
+        if (hInfo.ok == false) {
+            if (!down[role]) down[role] = [since: now(), told: false, logged: false]
+            else if (!down[role].told && (now() - (down[role].since as Long)) >= 600000 && now() >= ((down[role].retryAt ?: 0) as Long)) {
+                if (!down[role].logged) { logAction("⚠ SENSOR: ${names[role] ?: role} ${hInfo.why}."); down[role].logged = true }
+                def sent = dispatchNotification("sensorStale", [haz: null, from: "ok", to: "stale", detail: "${names[role] ?: role}: ${hInfo.why}. Hazards that need it are paused and keep their current state."])
+                // Told only when it really went out; otherwise retry in 30 min
+                // (quiet hours, daily cap...). Each sensor is announced on its own.
+                if (sent == true) down[role].told = true
+                else down[role].retryAt = now() + 1800000
+            }
+        } else if (down[role]) {
+            if (down[role].told) {
+                logAction("✅ SENSOR: ${names[role] ?: role} is reporting again.")
+                dispatchNotification("sensorBack", [haz: null, from: "stale", to: "ok", detail: "${names[role] ?: role} is reporting again."])
+            }
+            down.remove(role)
+        }
+    }
+    state.sensorDown = down
+}
+
+// Hold a hazard's state when its inputs are unavailable (2.0). The 1.x app
+// computed it from 0 instead, or cleared everything when one sensor slept.
+def source0(target, localTarget) { return (target != localTarget) ? "NWS" : "Local" }
+
+def holdHazard(String haz, String why) {
+    def matrix = state.threatMatrix ?: [:]
+    def data = matrix[haz]
+    if (!data) return
+    // NWS can still drive (and must still release) a paused hazard when it
+    // is allowed to drive switches. The local part counts as "no change".
+    if (settings.enableNOAA && settings.noaaTriggersHardware && (data.stateSource == "NWS" || nwsHazardStatus(haz) != "Clear")) {
+        def localProb = (data.stateSource == "NWS") ? 0 : (data.prob ?: 0)
+        processHazardState(haz, data.threat ?: 0, localProb, data.conf ?: 0, "⏸ Paused: ${why}. Local part held; NWS still applies.", (data.stateSource == "NWS") ? "Inputs unavailable." : (data.mathEx ?: ""), (settings.debounceMins ?: 15) * 60000)
+        return
+    }
+    data.howWhy = "⏸ Paused: ${why}. Holding the current state (${data.state}) until the sensor reports again."
+    data.mathEx = "Inputs unavailable."
+    matrix[haz] = data
+    state.threatMatrix = matrix
+}
+
+// Location-agnostic (2.0): when the hub's coordinates move more than 10 km,
+// everything learned about the old site is dropped and rediscovered.
+def checkSiteMoved() {
+    def lat = location.latitude; def lon = location.longitude
+    if (lat == null || lon == null) return
+    lat = lat as Double; lon = lon as Double
+    if (state.siteLat == null) { state.siteLat = lat; state.siteLon = lon; return }
+    def dLat = Math.toRadians(lat - (state.siteLat as Double)); def dLon = Math.toRadians(lon - (state.siteLon as Double))
+    def aa = Math.sin(dLat / 2) ** 2 + Math.cos(Math.toRadians(lat)) * Math.cos(Math.toRadians(state.siteLat as Double)) * Math.sin(dLon / 2) ** 2
+    def km = 6371.0d * 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa))
+    if (km < 10.0d) return
+    logAction("📍 LOCATION CHANGE: hub moved ${Math.round(km)} km. Re-discovering NWS office, forecast grid, airport and elevation; local climate history restarts.")
+    ["calStationId", "calStationName", "calStationFailCount", "lastStationDiscovery", "autoPressOffset", "lastCalPull", "metarExtras", "tafAdvisory",
+     "forecastUrl", "forecastUrlTime", "freezeForecast", "gridElevationM", "elevSamples", "elevLearnedM", "nwsCoverage", "nwsCoverageCheck",
+     "freezeDayLog", "pressureHistory", "pressRaw3", "nwsAlerts", "nwsNotified", "lastNwsGoodPoll"].each { state.remove(it) }
+    state.pressureHistory = []
+    state.siteLat = lat; state.siteLon = lon
+    if (settings.stationElevationFt != null && settings.stationElevationFt.toString() != "") logAction("⚠ LOCATION CHANGE: your entered station elevation (${settings.stationElevationFt} ft) is still in use. Clear or update it in Configuration.")
+    if (settings.enableInternet != false) { runIn(5, "pollAutoCal"); runIn(30, "pollForecast"); runIn(10, "pollNOAA") }
+}
+
+// ==============================================================================
 // ==============================================================================
 // AUTO-CALIBRATION ENGINE (Government sources only: api.weather.gov / NWS)
 // Discovers the nearest official NWS observation station from the hub's
@@ -1148,6 +1571,7 @@ def pollAutoCal() {
         logAction("🌐 DATA PULL: Requesting latest observation from ${url}")
         try { asynchttpGet("calObsHandler", [uri: url, timeout: 10, headers: hdrs, followRedirects: true]) } catch (e) { log.error "AutoCal obs fetch failed: ${e}" }
     } else {
+        if (!nwsCovered()) return
         def lat = location.latitude; def lon = location.longitude
         if (!lat || !lon) { logAction("⚠ AUTO-CAL: Hub has no coordinates set (Settings > Hub Details)."); return }
         // NWS API rejects coordinates with more than 4 decimal places (301
@@ -1161,7 +1585,8 @@ def pollAutoCal() {
 }
 
 def calPointsHandler(response, data) {
-    if (response.hasError()) { logAction("⚠ AUTO-CAL: NWS points lookup failed (${response.getStatus()})."); return }
+    if (response.hasError()) { nwsCoverageMiss(response); logAction("⚠ AUTO-CAL: NWS points lookup failed (${response.getStatus()})."); return }
+    state.nwsCoverage = true
     def json = parseJsonRobust(response)
     if (json == null) { logAction("⚠ Response could not be parsed; skipping this cycle."); return }
     def stationsUrl = json?.properties?.observationStations
@@ -1213,34 +1638,56 @@ def calObsHandler(response, data) {
     
     // barometricPressure = altimeter setting (what home stations calibrate
     // 'relative pressure' against). seaLevelPressure is the fallback.
-    def refPa = props.barometricPressure?.value ?: props.seaLevelPressure?.value
+    // 2.0: altimeter setting only. seaLevelPressure is reduced with the
+    // station's temperature history and is not the same quantity (about 100 m
+    // of elevation error in cold air here), and stale observations are skipped.
+    def obsMs = parseIsoMs(props.timestamp)
+    if (obsMs != null && (now() - obsMs) > 7200000) { logAction("⚠ AUTO-CAL: ${state.calStationId} observation is over 2 h old; skipped."); return }
+    def refPa = props.barometricPressure?.value
     if (refPa == null) { logAction("⚠ AUTO-CAL: Station ${state.calStationId} reported no pressure this cycle."); return }
     def refInHg = (refPa as Double) / 3386.39
+    if (refInHg < 27.0 || refInHg > 32.5) { logAction("⚠ AUTO-CAL REJECTED: reference ${String.format('%.2f', refInHg)} inHg does not look like an altimeter setting."); return }
     
-    def rawP = getFloat(sensorPress, ["pressure", "Baromrelin", "baromrelin", "Baromabsin", "baromabsin", "barometricPressure"], 0.0)
-    if (rawP <= 0) { logAction("⚠ AUTO-CAL: Local pressure sensor returned no reading; cannot compute offset."); return }
-    
+    // 2.0: with a station (absolute) pressure reading, the airport is used to
+    // LEARN this site's effective elevation (median of recent pulls), and the
+    // sea-level value is computed from your own barometer with the NWS
+    // altimeter formula. Your pressure no longer jumps when a pull lands.
+    // Sensors with only relative pressure keep the 1.x offset method.
+    def ps = readStationPressure()
+    def rawP = ps ?: readRelativePressure()
+    if (rawP == null) { logAction("⚠ AUTO-CAL: Local pressure sensor returned no reading; cannot calibrate."); return }
     def offset = Math.round((refInHg - rawP) * 100.0) / 100.0
-    
-    // Sanity bounds: reference must look like sea-level pressure and the
-    // offset must be physically plausible for elevations up to ~10,000 ft.
-    if (refInHg < 27.0 || refInHg > 32.5 || Math.abs(offset) > 10.0) {
-        logAction("⚠ AUTO-CAL REJECTED: Reference ${String.format('%.2f', refInHg)} inHg vs local ${String.format('%.2f', rawP)} produced an implausible offset (${offset}). Not applied.")
-        return
+    if (ps != null) {
+        def hImp = impliedElevationM(refInHg, ps)
+        if (hImp == null || hImp < -450 || hImp > 5500) { logAction("⚠ AUTO-CAL REJECTED: ${state.calStationId} ${String.format('%.2f', refInHg)} inHg vs station ${String.format('%.2f', ps)} inHg implies an impossible elevation."); return }
+        def samples = state.elevSamples ?: []
+        samples << Math.round(hImp * 10.0) / 10.0
+        if (samples.size() > 24) samples = samples.drop(samples.size() - 24)
+        state.elevSamples = samples
+        state.elevLearnedM = Math.round(median(samples) * 10.0) / 10.0
+        logAction("🌐 AUTO-CAL: ${state.calStationId} ${String.format('%.2f', refInHg)} inHg with your station pressure ${String.format('%.2f', ps)} inHg implies ${Math.round(hImp * 3.28084)} ft; using ${Math.round((state.elevLearnedM as Double) * 3.28084)} ft (median of ${samples.size()}).")
+    } else {
+        if (Math.abs(offset) > 10.0) {
+            logAction("⚠ AUTO-CAL REJECTED: Reference ${String.format('%.2f', refInHg)} inHg vs local ${String.format('%.2f', rawP)} produced an implausible offset (${offset}). Not applied.")
+            return
+        }
+        state.autoPressOffset = offset
     }
-    
-    state.autoPressOffset = offset
     def tempC = props.temperature?.value
     def tempDeltaStr = "n/a"
     if (tempC != null) {
         def refF = ((tempC as Double) * 9.0 / 5.0) + 32.0
-        def localT = getFloat(sensorTemp, ["temperature", "tempf"], null)
+        def localT = getFloat(sensorTemp, tempAttrs(), null)
+        if (localT != null && isMetric()) localT = (localT as Double) * 9.0 / 5.0 + 32.0
         if (localT != null) {
             state.calTempDelta = Math.round((localT - refF) * 10.0) / 10.0
             tempDeltaStr = "${state.calTempDelta > 0 ? '+' : ''}${state.calTempDelta}°F vs airport (informational only, local microclimates differ)"
         }
     }
-    state.lastCalPull = [time: now(), station: state.calStationId, ref: Math.round(refInHg * 100.0) / 100.0, raw: Math.round(rawP * 100.0) / 100.0, offset: offset]
+    def elevNow = siteElevationM()
+    def ours = (ps != null && elevNow != null) ? altimeterFromStation(ps, elevNow) : null
+    state.lastCalPull = [time: now(), station: state.calStationId, ref: Math.round(refInHg * 100.0) / 100.0, raw: Math.round(rawP * 100.0) / 100.0, offset: offset,
+                         kind: (ps != null ? "station" : "offset"), ours: ours != null ? Math.round(ours * 100.0) / 100.0 : null]
     
     // === METAR EXTRAS: visibility, wind QC, fallback snapshot ===
     def extras = [time: now(), station: state.calStationId]
@@ -1252,7 +1699,8 @@ def calObsHandler(response, data) {
     def wKmh = props.windSpeed?.value
     if (wKmh != null) {
         extras.windMph = Math.round((wKmh as Double) * 0.621371 * 10.0) / 10.0
-        def localW = getFloat(sensorWind, ["windSpeed", "windspeedmph", "wind"], null)
+        def localW = getFloat(sensorWind, windAttrs(), null)
+        if (localW != null) localW = (localW as Double) * windUnitFactor()
         // QC cross-check: informational only. Airport wind is NOT auto-trusted
         // over your sensor (microclimates are real), but a 20+ mph divergence
         // suggests a stuck anemometer or very local sheltering worth knowing about.
@@ -1264,7 +1712,8 @@ def calObsHandler(response, data) {
     if (tempC != null) extras.tempF = Math.round((((tempC as Double) * 9.0 / 5.0) + 32.0) * 10.0) / 10.0
     state.metarExtras = extras
     
-    logAction("🌐 AUTO-CAL APPLIED: ${state.calStationId} altimeter ${String.format('%.2f', refInHg)} inHg | your station ${String.format('%.2f', rawP)} inHg | offset set to ${offset > 0 ? '+' : ''}${offset} inHg. Temp check: ${tempDeltaStr}.")
+    if (ps == null) logAction("🌐 AUTO-CAL APPLIED: ${state.calStationId} altimeter ${String.format('%.2f', refInHg)} inHg | your station ${String.format('%.2f', rawP)} inHg | offset set to ${offset > 0 ? '+' : ''}${offset} inHg. Temp check: ${tempDeltaStr}.")
+    else logAction("🌐 AUTO-CAL CHECK: ${state.calStationId} ${String.format('%.2f', refInHg)} inHg, yours ${ours != null ? String.format('%.2f', ours) : 'n/a'} inHg from station pressure + elevation. Temp check: ${tempDeltaStr}.")
     runIn(5, "pollTaf")
     runIn(2, "evaluateMatrix")
 }
@@ -1315,12 +1764,29 @@ def tafResponseHandler(response, data) {
 // Used ONLY to decide whether a freeze is expected, so routine freeze alerts
 // can stay quiet. It never raises a freeze probability or fires anything.
 // ==============================================================================
+// Outside NWS coverage (another country, or an ocean point) the points
+// lookup returns 404. Then every NWS feed stands down for a week and the app
+// runs on local sensors alone; it re-checks weekly and after a move.
+def nwsCoverageMiss(response) {
+    def code = 0
+    try { code = response.getStatus() as Integer } catch (e) {}
+    if (code == 404) {
+        if (state.nwsCoverage != false) logAction("🌐 NWS: this location is outside NWS coverage. Running on local sensors only (re-checked weekly).")
+        state.nwsCoverage = false
+        state.nwsCoverageCheck = now()
+    }
+}
+def nwsCovered() {
+    if (state.nwsCoverage != false) return true
+    return (now() - (state.nwsCoverageCheck ?: 0)) > 604800000
+}
+
 def freezeForecastEnabled() {
     return settings.enableInternet != false && settings.seasonalFreezeAuto != false && settings.enableFreezeForecast != false
 }
 
 def pollForecast() {
-    if (!freezeForecastEnabled()) return
+    if (!freezeForecastEnabled() || !nwsCovered()) return
     def hdrs = ["User-Agent": "Hubitat-AdvancedSevereWeatherApp/4.0 (freeze-forecast)", "Accept": "application/geo+json"]
     // The forecast URL for a point rarely changes; refresh it weekly or after errors.
     if (!state.forecastUrl || !state.forecastUrlTime || (now() - state.forecastUrlTime) > 604800000) {
@@ -1337,7 +1803,8 @@ def pollForecast() {
 }
 
 def forecastPointsHandler(response, data) {
-    if (response.hasError()) { logAction("⚠ FORECAST: NWS points lookup failed (${response.getStatus()}). Will retry next hour."); return }
+    if (response.hasError()) { nwsCoverageMiss(response); logAction("⚠ FORECAST: NWS points lookup failed (${response.getStatus()}). Will retry next hour."); return }
+    state.nwsCoverage = true
     def json = parseJsonRobust(response)
     def url = json?.properties?.forecast?.toString()
     // Only ever follow a forecast link that stays on api.weather.gov.
@@ -1376,6 +1843,10 @@ def forecastHandler(response, data) {
     if (!parsed) { logAction("⚠ FORECAST: NWS forecast periods could not be read."); return }
     state.forecastFailCount = 0
     state.freezeForecast = [time: now(), periods: parsed]
+    try {
+        def ev = json?.properties?.elevation
+        if (ev?.value != null) state.gridElevationM = (ev.unitCode?.toString()?.contains("ft") ? (ev.value as Double) * 0.3048 : (ev.value as Double))
+    } catch (e) {}
     def nights = parsed.findAll { !it.day }.take(3).collect { "${it.name} ${Math.round(it.temp)}°F" }.join(", ")
     logAction("🌐 FORECAST: NWS lows ${nights ?: 'n/a'}.")
     runIn(2, "evaluateMatrix")
@@ -1409,7 +1880,7 @@ def iceCorroboration() {
     if (settings.enableInternet == false) return null
     def taf = state.tafAdvisory
     if (taf?.fzra && (now() - (taf.time ?: 0)) < 21600000) return "${taf.station} TAF FZRA/FZDZ"
-    if ((state.noaaAlertsMap ?: [:])["FreezeIce"] == true) return "NWS ice product"
+    if (nwsIceActive()) return "NWS ice product"
     def fc = state.freezeForecast
     if (fc?.periods && (now() - (fc.time ?: 0)) < 43200000) {
         def horizon = now() + 64800000
@@ -1492,7 +1963,10 @@ def updateHistory(historyName, val, maxAgeMs) {
         raw3.add(cleanVal)
         if (raw3.size() > 3) raw3 = raw3.drop(raw3.size() - 3)
         state.pressRaw3 = raw3
-        if (raw3.size() == 3) cleanVal = raw3.sort()[1]  // median
+        // sort(false) = sorted COPY. 1.x used sort(), which reordered the stored
+        // window, so the next drop() discarded the lowest value instead of the
+        // oldest and a falling pressure barely registered.
+        if (raw3.size() == 3) cleanVal = raw3.sort(false)[1]  // median
     }
     
     if (settings.enableHardwareFilter != false) {
@@ -1535,27 +2009,65 @@ def updateHistory(historyName, val, maxAgeMs) {
     state."${historyName}" = hist
 }
 
-def stdHandler(evt) { markActive(); runIn(1, "evaluateMatrix") }
-def tempHandler(evt) { updateHistory("tempHistory", evt.value, 3600000); runIn(1, "evaluateMatrix") }
-def pressureHandler(evt) { 
-    def raw = 0.0
-    try { raw = evt.value.toString().replaceAll("[^\\d.-]", "").toFloat() } catch(e) {}
-    def cal = raw + getPressOffset()
-    updateHistory("pressureHistory", cal, 10800000)
-    runIn(1, "evaluateMatrix") 
-} 
-def windHandler(evt) { updateHistory("windHistory", evt.value, 3600000); runIn(1, "evaluateMatrix") }
-def windDirHandler(evt) { updateHistory("windDirHistory", evt.value, 3600000); runIn(1, "evaluateMatrix") }
+def stdHandler(evt) { markSeen(evt); runIn(1, "evaluateMatrix") }
+def tempHandler(evt) {
+    markSeen(evt)
+    def v = null
+    try { v = evt.value.toString().replaceAll("[^\\d.-]", "") as Double } catch (e) {}
+    if (v != null && isMetric()) v = v * 9.0d / 5.0d + 32.0d
+    if (v != null && v >= -80.0d && v <= 140.0d) updateHistory("tempHistory", v, 3600000)
+    runIn(1, "evaluateMatrix")
+}
+// 2.0: whichever pressure attribute fired, the history gets the one chosen
+// series (station pressure when the sensor has it), with no offset added.
+def pressureHandler(evt) {
+    markSeen(evt)
+    recordPressure()
+    runIn(1, "evaluateMatrix")
+}
+def recordPressure() {
+    def sv = pressureSeriesValue()
+    if (sv == null) return
+    if (state.pressSeriesKind != sv.kind) {
+        if (state.pressSeriesKind != null) logAction("🔧 PRESSURE: tendency now measured on ${sv.kind} pressure (was ${state.pressSeriesKind}); pressure history restarted.")
+        state.pressSeriesKind = sv.kind
+        state.pressureHistory = []
+        state.pressRaw3 = []
+    }
+    // Two pressure attributes often arrive in the same upload; keep one
+    // sample (compared on the RAW value, not the median-filtered one).
+    def lr = state.pressLastRaw
+    if (lr && (now() - (lr.t as Long)) < 20000 && Math.abs((lr.v as Double) - sv.v) < 0.0001) return
+    state.pressLastRaw = [t: now(), v: sv.v]
+    updateHistory("pressureHistory", sv.v, 10800000)
+}
+def windHandler(evt) {
+    markSeen(evt)
+    def v = null
+    try { v = (evt.value.toString().replaceAll("[^\\d.-]", "") as Double) * windUnitFactor() } catch (e) {}
+    if (v != null && v >= 0 && v <= 200) updateHistory("windHistory", v, 3600000)
+    runIn(1, "evaluateMatrix")
+}
+def windDirHandler(evt) { markSeen(evt); updateHistory("windDirHistory", evt.value, 3600000); runIn(1, "evaluateMatrix") }
+def lightningHasCount() {
+    if (!sensorLightning) return false
+    try { if (sensorLightning.hasAttribute("lightningCount")) return true } catch (e) {}
+    return sensorLightning.currentValue("lightningCount") != null
+}
 def lightningHandler(evt) {
+    markSeen(evt)
     // Ecowitt WH57 emits a cumulative daily "lightningCount", not per-strike distance events.
     // Convert count deltas into individual strike entries so the 30-min window works.
     if (evt.name == "lightningCount") {
         def count = 0
         try { count = evt.value.toString().replaceAll("[^\\d]", "").toInteger() } catch(e) { return }
+        // First reading after install/upgrade is a baseline, not new strikes
+        // (the daily total would otherwise land as a burst of "new" strikes).
+        if (state.lastLightningCount == null) { state.lastLightningCount = count; return }
         def lastCount = state.lastLightningCount ?: 0
         if (count > lastCount) {
             def newStrikes = Math.min(count - lastCount, 50) // sanity cap
-            def dist = getFloat(sensorLightning, ["lightningDistance", "distance"], 99.0)
+            def dist = (getFloat(sensorLightning, ["lightningDistance", "distance"], 99.0) as Double) * distUnitFactor()
             def hist = state.lightningHistory ?: []
             newStrikes.times { hist.add([time: now(), value: dist]) }
             def cutoff = now() - 1800000
@@ -1565,9 +2077,13 @@ def lightningHandler(evt) {
         }
         state.lastLightningCount = count // handles midnight reset (count < lastCount) automatically
         markActive()
-    } else {
-        // Distance-style sensors: value is km/mi to last strike
-        updateHistory("lightningHistory", evt.value, 1800000)
+    } else if (!lightningHasCount()) {
+        // Distance-style sensors: value is km/mi to last strike. Detectors that
+        // also report a strike COUNT are counted from the count only; 1.x
+        // counted every distance update as another strike (double counting).
+        def dv = null
+        try { dv = (evt.value.toString().replaceAll("[^\\d.-]", "") as Double) * distUnitFactor() } catch (e) {}
+        if (dv != null) updateHistory("lightningHistory", dv, 1800000)
     }
     runIn(1, "evaluateMatrix")
 }
@@ -1772,7 +2288,7 @@ def evaluateMatrix() {
         doEvaluateMatrix()
         state.lastEngineError = null
     } catch (e) {
-        state.lastEngineError = "[${new Date().format('MM/dd hh:mm a', location.timeZone)}] ${e}"
+        state.lastEngineError = "[${new Date(now()).format('MM/dd hh:mm a', location.timeZone)}] ${e}"
         log.error "${app.label}: ENGINE CYCLE FAILED: ${e}"
     }
 }
@@ -1781,7 +2297,7 @@ def doEvaluateMatrix() {
     def evalStart = now() 
     
     // MIDNIGHT ROLLOVER - Daily Rain pushed to 7-Day History
-    def todayStr = new Date().format("yyyy-MM-dd", location.timeZone)
+    def todayStr = new Date(now()).format("yyyy-MM-dd", location.timeZone)
     if (!state.currentDateStr) state.currentDateStr = todayStr
     
     if (state.currentDateStr != todayStr) {
@@ -1795,66 +2311,44 @@ def doEvaluateMatrix() {
         state.currentDayRain = 0.0
     }
     
-    def currentDaily = getFloat(sensorRainDaily, ["rainDaily", "dailyrainin", "water", "dailyWater"], 0.0)
+    def currentDaily = (getFloat(sensorRainDaily, ["rainDaily", "dailyrainin", "water", "dailyWater"], 0.0) as Double) * rainUnitFactor()
     if (currentDaily > (state.currentDayRain ?: 0.0)) state.currentDayRain = currentDaily
 
     if (!sensorTemp || !sensorHum || !sensorPress) return
+    checkSiteMoved()
 
-    def staleMins = settings.staleDataTimeout ?: 30
-    def isStale = (settings.enableStaleCheck != false) && ((now() - (state.lastHeartbeat ?: now())) > (staleMins * 60000))
-    state.isStale = isStale
-    state.survivalModeActive = false
-    
-    // --- EMI/EMP GUARD & DYING BREATH SENSOR FAILOVER ---
-    // A routine (dry) freeze ALARM can sit on for days in winter; it must not
-    // make a stale sensor look like a storm-destroyed one.
-    def wasAlarmActive = state.threatMatrix?.any { k, v -> (v.state == "ALARM" && k != "Freeze") || v.state == "ICE ALARM" }
-    state.emiActive = false
-    
-    if (isStale && settings.enableEMIGuard != false) {
-        def recentCloseStrike = state.lightningHistory?.find { (now() - it.time) < 1800000 && it.value <= 3.0 }
-        if (recentCloseStrike) {
-            logAction("⚡ EMI GUARD ACTIVE: Sensors went stale immediately after a close lightning strike. Latching current states and blocking cloud failover (Hardware likely frozen, not destroyed).")
-            state.emiActive = true
-            isStale = false 
-        }
-    }
-    
-    if (isStale && wasAlarmActive && settings.enableDyingBreath != false && !state.emiActive) {
-        logAction("🚨 DYING BREATH: Local sensors went offline during an active ALARM. Latching states.")
-        isStale = false 
-    }
-    
-    // Fetch Data
-    def t = getFloat(sensorTemp, ["temperature", "tempf"], 0.0)
-    def h = getFloat(sensorHum, ["humidity"], 0.0)
-    def rawP = getFloat(sensorPress, ["pressure", "Baromrelin", "baromrelin", "Baromabsin", "baromabsin", "barometricPressure"], 0.0)
-    def p = rawP + getPressOffset()
-    
-    def r = getFloat(sensorRain, ["rainRate", "hourlyrainin", "precipRate", "hourlyRain"], 0.0)
-    def windVal = getFloat(sensorWind, ["windSpeed", "windspeedmph", "wind"], 0.0)
-    def gustVal = getFloat(sensorWind, ["windGust", "windgustmph", "gust"], windVal)
-    if (gustVal == null || gustVal < windVal) gustVal = windVal
-    def windDirVal = getFloat(sensorWindDir, ["windDirection", "winddir", "windDir"], 0.0)
-    def luxVal = getFloat(sensorLux, ["illuminance", "solarradiation", "solarRadiation"], 0.0)
+    // --- READINGS WITH PER-SENSOR QUALITY CONTROL (2.0) ---
+    // Each reading is null when its device is stale, the attribute is
+    // missing, or the value is physically implausible. Engines that need a
+    // missing reading hold their current state instead of computing from a
+    // fake 0 (a missing temperature used to read as 0°F = hard freeze).
+    def rd = readSensors()
+    state.sensorHealth = rd.health
+    reportSensorHealth(rd.health)
+    def t = rd.t
+    def h = rd.h
+    def rawP = rd.rawP
+    def ps = rd.ps                                 // station pressure (inHg) or null
+    def p = rd.alt != null ? rd.alt : (rawP ?: 0.0)  // altimeter / sea-level (inHg) for display
+    state.currentAltimeter = rd.alt
+    state.pressureMode = rd.pressMode
+    state.mslpMiscalibrated = (rd.alt == null)
+
+    def r = rd.rain != null ? rd.rain : 0.0
+    def windVal = rd.wind != null ? rd.wind : 0.0
+    def gustVal = rd.gust != null ? rd.gust : windVal
+    if (gustVal < windVal) gustVal = windVal
+    def windDirVal = rd.windDir != null ? rd.windDir : 0.0
+    def luxVal = rd.lux != null ? rd.lux : 0.0
     def strikeCount = state.lightningHistory?.size() ?: 0
-    
-    // WS90 piezo haptic rain flag: instant native "first drop" detector
-    def piezoRaining = (sensorRain?.currentValue("raining")?.toString() == "true")
-    
-    // MSLP sanity guard: sea-level pressure never reads below ~28.5 inHg outside
-    // a major hurricane core. A lower value means the station is reporting
-    // ELEVATION pressure (uncalibrated). Sea-level-based rules (Tropical depth,
-    // Eye-of-Storm lock) must be disabled or they latch permanently.
-    state.mslpMiscalibrated = (p > 0 && p < 28.5)
-    if (state.mslpMiscalibrated && !state.mslpWarned) {
-        logAction("⚠ CALIBRATION: Pressure reads ${String.format('%.2f', p)} inHg, which is station (elevation) pressure, not sea-level. Set the MSLP Offset in config or calibrate the gateway's relative pressure. Tropical depth scoring and Eye-of-Storm lock are suspended until then.")
-        state.mslpWarned = true
-    } else if (!state.mslpMiscalibrated) {
-        state.mslpWarned = false
-    }
 
-    if (settings.enableThermalSmoothing != false) {
+    // WS90 piezo haptic rain flag: instant native "first drop" detector
+    def piezoRaining = (rd.health.rain?.ok != false) && (sensorRain?.currentValue("raining")?.toString() == "true")
+
+    def isStale = (t == null && h == null && rawP == null)
+    state.isStale = isStale
+
+    if (settings.enableThermalSmoothing != false && t != null) {
         def lastT = state.smoothedTemp != null ? state.smoothedTemp : t
         def delta = Math.abs(t - lastT)
         // Only smooth RISING temps (sun-spike protection). Falling temps are
@@ -1862,11 +2356,11 @@ def doEvaluateMatrix() {
         if (delta > 3.0 && t > lastT && state.tempHistory?.size() > 0) t = lastT + ((t - lastT) * 0.3)
         state.smoothedTemp = t
     }
-    
-    def dp = calculateDewPoint(t, h)
-    def dpSpread = t - dp
-    if (dpSpread < 0) dpSpread = 0.0
-    updateHistory("spreadHistory", dpSpread, 3600000)
+
+    def haveTH = (t != null && h != null && h > 0)
+    def dp = haveTH ? calculateDewPoint(t, h) : null
+    def dpSpread = haveTH ? Math.max(0.0, t - dp) : 99.0
+    if (haveTH) updateHistory("spreadHistory", dpSpread, 3600000)
 
     def pTrendData = getTrendData(state.pressureHistory, 0.25)
     def pTrend3Hr = getTrendData(state.pressureHistory, 2.5) 
@@ -1886,15 +2380,11 @@ def doEvaluateMatrix() {
     // meteorologically meaningful with real airflow (~8+ mph sustained).
     def windDirValid = (windVal >= 8.0)
     
-    // Is an OFFICIAL NWS Tornado product active? Local tornado alarms below a
-    // real wind gate defer to this.
-    def noaaTornadoActive = ((state.noaaGlobalAlerts ?: "").toLowerCase().contains("tornado"))
-    
     // === SEASONAL CLIMATE LEARNING (for Freeze auto-mute) ===
     // Track each day's minimum temp; a rolling 14-day log of "did it freeze"
     // tells us whether the location is in established winter, where routine
     // freeze alerts are noise (everything's already winterized).
-    def climDayStr = new Date().format("yyyy-MM-dd", location.timeZone)
+    def climDayStr = new Date(now()).format("yyyy-MM-dd", location.timeZone)
     if (state.freezeLogDate != climDayStr) {
         if (state.freezeLogDate != null && state.todayMinTemp != null) {
             def flog = state.freezeDayLog ?: []
@@ -1905,7 +2395,7 @@ def doEvaluateMatrix() {
         state.freezeLogDate = climDayStr
         state.todayMinTemp = t
     }
-    if (state.todayMinTemp == null || t < state.todayMinTemp) state.todayMinTemp = t
+    if (t != null && (state.todayMinTemp == null || t < state.todayMinTemp)) state.todayMinTemp = t
     def winterLog = state.freezeDayLog ?: []
     state.establishedWinter = (winterLog.size() >= 10 && winterLog.count { it } >= 10)  // kept for reference/dashboards
     def freezeExp = computeFreezeExpectation()
@@ -1923,17 +2413,21 @@ def doEvaluateMatrix() {
     state.spreadTrendStr = sTrendData.str
     state.windTrendStr = sensorWind ? wTrendData.str : "N/A"
     
-    def vpd = calculateVPD(t, h)
+    def vpd = haveTH ? calculateVPD(t, h) : 0.0
     state.currentVPD = vpd
     
-    def wb = calculateWetBulb(t, h)
+    // No humidity: the wet bulb cannot be above the air temperature, so the
+    // air temperature is the safe (ice-favouring) stand-in.
+    def wb = haveTH ? calculateWetBulb(t, h) : t
     state.currentWetBulb = wb
     
-    // Kinetic & Load Physics
+    // Kinetic & Load Physics. Air density needs the pressure AT the station,
+    // not sea-level pressure (the 1.x code used MSLP, ~11% too dense here).
     def airDensity = 1.225
     def windLoad = 0.0
-    if (settings.enableKineticWind != false) {
-        airDensity = calculateAirDensity(t, h, p)
+    def densP = ps ?: (rd.alt != null && siteElevationM() != null ? stationFromAltimeter(rd.alt, siteElevationM()) : null)
+    if (settings.enableKineticWind != false && haveTH && densP != null) {
+        airDensity = calculateAirDensity(t, h, densP)
         state.currentAirDensity = airDensity
         if (sensorWind) {
             // Structural load scales with the PEAK gust (ASCE 7 basis), not sustained wind
@@ -1944,6 +2438,8 @@ def doEvaluateMatrix() {
     
     def kineticWindMultiplier = airDensity / 1.225 
     
+    // Pressure oscillations are shown for interest only; 2.0 no longer adds
+    // probability for them (no published basis for a backyard barometer).
     def isGravityWave = false
     if (settings.enableGravityWave != false) {
         isGravityWave = detectGravityWaves(state.pressureHistory)
@@ -2000,99 +2496,12 @@ def doEvaluateMatrix() {
     def highestProbThisCycle = 0.0
 
     // --------------------------------------------------------------------------------
-    // 1. TORNADO / EXTREME SHEAR DNA
-    // --------------------------------------------------------------------------------
-    if (settings.enableTornado != false && !isStale) {
-        def tThreat = 0.0
-        def tMath = ""
-        
-        if (sensorWind) {
-            def kineticWindForce = windVal * kineticWindMultiplier
-            tThreat = (kineticWindForce / 50.0) * 100.0
-            if (tThreat > 100.0) tThreat = 100.0
-            tMath += "Thrt: (W[${String.format('%.1f', windVal)}] * Dens[${String.format('%.2f', kineticWindMultiplier)}] / 50) * 100 = ${String.format('%.1f', tThreat)}%<br>"
-        } else {
-            tMath += "Thrt: 0% [No Wind Sensor]<br>"
-        }
-        
-        def tProb = 0.0
-        def tConf = 50
-        def tWhy = "Atmospheric shear and barometric metrics are currently stable."
-        tMath += "Prob Base: 0.0%<br>"
-        
-        if (isGravityWave) {
-            tProb += 15.0
-            tMath += "&nbsp;↳ PROACTIVE: Atmospheric Gravity Wave Detected: +15.0%<br>"
-        }
-        
-        // Synergy rule now requires: a pressure move exceeding sensor noise
-        // floor (pressQuality), valid direction data (real airflow), and
-        // actual gust energy. On 7/12/26 this rule fired on one 0.01 inHg
-        // quantization step plus vane wander at 4.7 mph. Never again.
-        if (pressQuality && windDirValid && gustVal >= 15.0 && pTrend30m.rate <= -0.06 && shiftMagnitude >= 45.0) {
-            tProb += 30.0
-            tMath += "&nbsp;↳ PROACTIVE: Severe Shear/Pressure Synergy (30m, quality-gated): +30.0%<br>"
-            if (dpSpread <= 5.0) {
-                tProb += 15.0
-                tMath += "&nbsp;&nbsp;↳ PROACTIVE: Low LCL/Saturated Base: +15.0%<br>"
-            }
-        } else if (pTrend30m.rate <= -0.06 && shiftMagnitude >= 45.0) {
-            tMath += "&nbsp;↳ Shear/Pressure signature IGNORED: below data-quality gates (pressure move ${String.format('%.3f', Math.abs(pTrend30m.diff))} vs required ${String.format('%.3f', pressMinDiff)} inHg, wind ${String.format('%.1f', windVal)} mph, gust ${String.format('%.1f', gustVal)} mph).<br>"
-        }
-        
-        if (pressQuality && pAccel <= -0.08) {
-            tProb += 50.0
-            tMath += "&nbsp;↳ REACTIVE: Violent Pressure Acceleration (TVS) [${String.format('%.2f', pAccel)}]: +50.0%<br>"
-        } else if (pAccel <= -0.08) {
-            tMath += "&nbsp;↳ Pressure acceleration IGNORED: below sensor noise floor.<br>"
-        }
-        
-        if (settings.enableKineticWind != false && windLoad >= 10.0) {
-            tConf += 25
-            tProb += 40.0
-            tMath += "&nbsp;↳ REACTIVE: Destructive Structural Wind Load [${String.format('%.1f', windLoad)}]: +40.0%<br>"
-        } else if (sensorWind && windVal >= 35.0) {
-            tConf += 25
-            tProb += 40.0
-            tMath += "&nbsp;↳ REACTIVE: Kinetic Destructive Wind: +40.0%<br>"
-        }
-        
-        if (sensorWindDir) tConf += 25
-        
-        // SANITY CAP: a tornado at your location without at least 20 mph of
-        // gust at your sensor is not a locally detectable event. If the NWS
-        // (with radar) has issued a tornado product, their override path
-        // handles it; otherwise cap below the warning threshold. The user's
-        // stated preference: accuracy over false positives.
-        if (gustVal < 20.0 && !noaaTornadoActive && tProb >= (settings.tornadoWarnThresh ?: 50)) {
-            tProb = 40.0
-            tMath += "&nbsp;↳ <b>LOW-WIND SANITY CAP:</b> Prob capped at 40% (gust ${String.format('%.1f', gustVal)} mph < 20, no official NWS tornado product active).<br>"
-        }
-        
-        tProb = Math.round(tProb)
-        if (tProb > 100) tProb = 100
-        tThreat = Math.round(tThreat)
-        if (tThreat > 100) tThreat = 100
-        
-        tMath += "<b>Final Prob: ${tProb}%</b>"
-        
-        if (tProb > highestProbThisCycle) highestProbThisCycle = tProb
-        
-        if (tProb > 20) {
-            tWhy = "Probability is ${tProb}%. "
-            if (isGravityWave) tWhy += "<b>PROACTIVE THREAT:</b> Pre-storm atmospheric gravity waves detected (supercell proxy). "
-            if (pTrend30m.rate <= -0.06 && shiftMagnitude >= 45.0) tWhy += "<b>PROACTIVE THREAT:</b> Dangerous synergy of rapidly falling pressure and shifting winds detected. "
-            if (pAccel <= -0.08) tWhy += "<b>REACTIVE THREAT:</b> A violent, localized pressure plunge is actively occurring (TVS signature). "
-            if (windLoad >= 10.0) tWhy += "Destructive structural wind load of ${String.format('%.1f', windLoad)} is impacting the location."
-        }
-        
-        processHazardState("Tornado", tThreat, tProb, tConf, tWhy, tMath, debounceMs)
-    }
-
-    // --------------------------------------------------------------------------------
     // 2. THUNDERSTORM DNA
     // --------------------------------------------------------------------------------
-    if (settings.enableThunderstorm != false && !isStale) {
+    def tsWindLost = (sensorWind && rd.wind == null && strikeCount == 0)
+    if (settings.enableThunderstorm != false && tsWindLost) {
+        holdHazard("Thunderstorm", "wind sensor ${rd.health.wind?.why ?: 'unavailable'}")
+    } else if (settings.enableThunderstorm != false && (rd.wind != null || rd.health.lightning?.ok || rd.ps != null || rawP != null)) {
         def tsThreat = 0.0
         def tsMath = ""
         
@@ -2115,12 +2524,9 @@ def doEvaluateMatrix() {
         def tsWhy = "No localized convective or electrical activity detected."
         tsMath += "Prob Base: 0.0%<br>"
         
-        if (isGravityWave) {
-            tsProb += 15.0
-            tsMath += "&nbsp;↳ PROACTIVE: Atmospheric Gravity Wave Detected: +15.0%<br>"
-        }
+        if (isGravityWave) tsMath += "&nbsp;↳ Pressure oscillation noted (information only, no score)<br>"
         
-        if (t > 75.0 && dp > 65.0) {
+        if (haveTH && t > 75.0 && dp > 65.0) {
             tsProb += 20.0
             tsMath += "&nbsp;↳ PROACTIVE: High Heat/Moisture (CAPE Proxy): +20.0%<br>"
             if (sTrendData.rate <= -2.0) {
@@ -2146,7 +2552,7 @@ def doEvaluateMatrix() {
         
         // Gust front: mesohigh pressure JUMP + temp crash at the 30-min scale,
         // gated on GUST (leading indicator) rather than sustained wind.
-        if (gustVal > 25.0 && pressQuality && pTrend30m.rate >= 0.05 && tTrend30m.rate <= -5.0) {
+        if (gustVal > 25.0 && pressQuality && t != null && pTrend30m.rate >= 0.05 && tTrend30m.rate <= -5.0) {
             tsProb += 40.0
             tsMath += "&nbsp;↳ REACTIVE: Gust Front / Mesohigh Pressure Jump (30m scale): +40.0%<br>"
         }
@@ -2178,7 +2584,7 @@ def doEvaluateMatrix() {
         }
         
         // DRY MICROBURST / VIRGA DETECTION
-        if (settings.enableDryMicroburst != false && dpSpread >= 25.0 && tTrend30m.diff <= -3.0 && (wTrendData.diff >= 15.0 || gustVal - windVal >= 15.0) && r == 0.0) {
+        if (settings.enableDryMicroburst != false && haveTH && dpSpread >= 25.0 && tTrend30m.diff <= -3.0 && (wTrendData.diff >= 15.0 || gustVal - windVal >= 15.0) && r == 0.0) {
             tsProb += 60.0
             tsThreat = 100.0
             tsMath += "&nbsp;↳ REACTIVE: DRY MICROBURST (Virga Evaporative Cooling): +60.0%<br>"
@@ -2199,20 +2605,23 @@ def doEvaluateMatrix() {
         
         if (tsProb > 20 && !tsWhy.contains("MICROBURST")) {
             tsWhy = "Probability is ${tsProb}%. "
-            if (isGravityWave) tsWhy += "<b>PROACTIVE THREAT:</b> Pre-storm atmospheric gravity waves detected. "
             if (vectorData.status == "Approaching") tsWhy += "<b>STORM VECTORING:</b> Active storm cell approaching sensor. "
-            if (t > 75.0 && dp > 65.0 && sTrendData.rate <= -2.0) tsWhy += "<b>PROACTIVE THREAT:</b> High instability combined with rapid saturation indicates brewing convection. "
+            if (haveTH && t > 75.0 && dp > 65.0 && sTrendData.rate <= -2.0) tsWhy += "<b>PROACTIVE THREAT:</b> High instability combined with rapid saturation indicates brewing convection. "
             if (gustVal > 25.0 && pTrend30m.rate >= 0.05) tsWhy += "<b>REACTIVE THREAT:</b> A sudden pressure jump, temp crash, and wind spike indicates a severe downdraft/gust front is directly overhead. "
             if (gustVal >= 58.0) tsWhy += "<b>REACTIVE THREAT:</b> Wind gusts have met the official NWS severe thunderstorm criterion (58+ mph). "
         }
         
         processHazardState("Thunderstorm", tsThreat, tsProb, tsConf, tsWhy, tsMath, debounceMs)
+    } else if (settings.enableThunderstorm != false) {
+        holdHazard("Thunderstorm", "wind, lightning and pressure all unavailable")
     }
 
     // --------------------------------------------------------------------------------
     // 3. FLOOD DNA
     // --------------------------------------------------------------------------------
-    if (settings.enableFlood != false && !isStale) {
+    if (settings.enableFlood != false && sensorRain && rd.rain == null) {
+        holdHazard("Flood", "rain gauge ${rd.health.rain?.why ?: 'unavailable'}")
+    } else if (settings.enableFlood != false) {
         def fMath = ""
         def fThreat = (state.currentDayRain / 3.0) * 100.0
         if (fThreat > 100.0) fThreat = 100.0
@@ -2300,7 +2709,9 @@ def doEvaluateMatrix() {
     // --------------------------------------------------------------------------------
     // 4. FREEZE & ICE DNA
     // --------------------------------------------------------------------------------
-    if (settings.enableFreeze != false && !isStale) {
+    if (settings.enableFreeze != false && t == null) {
+        holdHazard("Freeze", "temperature ${rd.health.temp?.why ?: 'unavailable'}")
+    } else if (settings.enableFreeze != false) {
         def frMath = ""
         def frThreat = 0.0
         if (t <= 32.0) {
@@ -2429,7 +2840,9 @@ def doEvaluateMatrix() {
     // --------------------------------------------------------------------------------
     // 5. SEVERE HEAT DNA (WBGT)
     // --------------------------------------------------------------------------------
-    if (settings.enableSevereHeat != false && !isStale) {
+    if (settings.enableSevereHeat != false && !haveTH) {
+        holdHazard("SevereHeat", "temperature/humidity unavailable")
+    } else if (settings.enableSevereHeat != false) {
         def shMath = ""
         def targetHeatMetric = 0.0
         
@@ -2486,72 +2899,15 @@ def doEvaluateMatrix() {
     }
 
     // --------------------------------------------------------------------------------
-    // 6. TROPICAL DNA
-    // --------------------------------------------------------------------------------
-    if (settings.enableTropical != false && !isStale) {
-        def trMath = ""
-        def trThreat = ((29.90 - p) / 0.50) * 100.0
-        if (trThreat > 100.0) trThreat = 100.0
-        if (trThreat < 0.0) trThreat = 0.0
-        trMath += "Thrt: ((29.90 - P[${String.format('%.2f', p)}])/0.5) * 100 = ${String.format('%.1f', trThreat)}%<br>"
-        
-        def trProb = 0.0
-        def trConf = 50
-        def trWhy = "No sustained tropical barometric signatures detected locally."
-        trMath += "Prob Base: 0.0%<br>"
-        
-        if (sensorPress) trConf += 25
-        if (sensorWind) trConf += 25
-        
-        if (state.mslpMiscalibrated) {
-            trMath += "&nbsp;↳ Depth Score SUSPENDED: pressure is uncalibrated station pressure (see MSLP Offset).<br>"
-        } else if (p < 29.80) {
-            def pScore = ((29.80 - p) / 0.30) * 60.0
-            def pCap = pScore > 70.0 ? 70.0 : pScore
-            trProb += pCap
-            trMath += "&nbsp;↳ Depth Score (MSLP Calibrated): +${String.format('%.1f', pCap)}%<br>"
-        }
-        
-        if (pTrend3Hr.rate <= -0.05) {
-            trProb += 15
-            trMath += "&nbsp;↳ PREDICTIVE: Sustained 3hr Drop [${String.format('%.2f', pTrend3Hr.rate)}]: +15.0%<br>"
-            if (dp >= 70.0) {
-                trProb += 15
-                trMath += "&nbsp;&nbsp;&nbsp;↳ PREDICTIVE: Deep Moisture Loading Synergy: +15.0%<br>"
-            }
-        }
-        
-        if (windVal > 30.0) {
-            trProb += 30
-            trMath += "&nbsp;↳ Sustained Wind [>30mph]: +30.0%<br>"
-        }
-        
-        trProb = Math.round(trProb)
-        if (trProb > 100) trProb = 100
-        trThreat = Math.round(trThreat)
-        if (trThreat > 100) trThreat = 100
-        
-        trMath += "<b>Final Prob: ${trProb}%</b>"
-        
-        if (trProb > highestProbThisCycle) highestProbThisCycle = trProb
-        
-        if (trProb > 20) {
-            trWhy = "Threat intensity is ${trThreat}% due to a current barometric depth of ${String.format('%.2f', p)} inHg. "
-            if (pTrend3Hr.rate <= -0.05 && dp >= 70.0) trWhy += "<b>PREDICTIVE METRICS ENGAGED:</b> A long-duration barometric vacuum is combining with deep atmospheric moisture loading. "
-            trWhy += "Probability is ${trProb}% factoring in a 3-hour pressure trajectory of ${String.format('%.2f', pTrend3Hr.rate)} inHg/hr and sustained winds of ${String.format('%.1f', windVal)} mph. "
-        }
-        
-        processHazardState("Tropical", trThreat, trProb, trConf, trWhy, trMath, debounceMs)
-    }
-
-    // --------------------------------------------------------------------------------
     // 7. FIRE WEATHER (RED FLAG) DNA
     // --------------------------------------------------------------------------------
-    if (settings.enableFireWeather != false && !isStale) {
+    if (settings.enableFireWeather != false && !haveTH) {
+        holdHazard("FireWeather", "temperature/humidity unavailable")
+    } else if (settings.enableFireWeather != false) {
         def fwMath = ""
         def fwThreat = 0.0
         
-        def rainWeek = getFloat(sensorRainWeekly, ["rainWeekly", "weeklyrainin", "weeklyWater"], 0.0)
+        def rainWeek = (getFloat(sensorRainWeekly, ["rainWeekly", "weeklyrainin", "weeklyWater"], 0.0) as Double) * rainUnitFactor()
         def past7DayTotal = state.sevenDayRain?.sum { it.amount } ?: 0.0
         def totalFuelMoisture = rainWeek > 0.0 ? rainWeek : past7DayTotal
         fwMath += "Fuel Moisture Proxy (7d Rain): ${String.format('%.2f', totalFuelMoisture)} in<br>"
@@ -2613,11 +2969,7 @@ def doEvaluateMatrix() {
         processHazardState("FireWeather", fwThreat, fwProb, fwConf, fwWhy, fwMath, debounceMs)
     }
 
-    if (isStale && !state.survivalModeActive) {
-        def hazards = ["Tornado", "Thunderstorm", "Flood", "Freeze", "SevereHeat", "Tropical", "FireWeather"]
-        hazards.each { haz -> processHazardState(haz, 0, 0, 0, "⚠ Sensors Offline. Stale data prevented safe calculation.", "Offline. Connect sensors.", debounceMs) }
-        highestProbThisCycle = 0.0 
-    }
+    if (isStale) highestProbThisCycle = 0.0
     
     // Store highest probability for chart rendering
     updateHistory("probHistory", highestProbThisCycle, 86400000)
@@ -2636,14 +2988,14 @@ def doEvaluateMatrix() {
             state.activeEventStats = [
                 maxWind: windVal, 
                 minPress: p, 
-                startTemp: t, 
-                minTemp: t, 
+                startTemp: t ?: 0.0, 
+                minTemp: t ?: 0.0, 
                 startTime: now()
             ]
         } else {
             if (windVal > state.activeEventStats.maxWind) state.activeEventStats.maxWind = windVal
             if (p < state.activeEventStats.minPress && p > 0) state.activeEventStats.minPress = p
-            if (t < state.activeEventStats.minTemp) state.activeEventStats.minTemp = t
+            if (t != null && t < (state.activeEventStats.minTemp ?: t)) state.activeEventStats.minTemp = t
         }
     } else if (state.eventActive) {
         state.eventActive = false
@@ -2727,14 +3079,15 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
     
     def localTarget = targetState
     if (settings.enableNOAA && settings.noaaTriggersHardware) {
-        def noaaMap = state.noaaAlertsMap ?: [:]
-        def officialStatus = noaaMap[haz] ?: "Clear"
+        def officialStatus = nwsHazardStatus(haz)
         // An official Ice Storm / freezing rain product is ice, not a routine
         // freeze: route it to the ICE states so it is never muted.
-        if (haz == "Freeze" && noaaMap["FreezeIce"] == true && officialStatus != "Clear") isIceStorm = true
+        if (haz == "Freeze" && nwsIceActive() && officialStatus != "Clear") isIceStorm = true
 
         if (officialStatus == "ALARM") {
-            targetState = isIceStorm ? "ICE ALARM" : "ALARM"
+            // A plain Freeze Warning does not confirm local "possible ice":
+            // ICE ALARM needs an NWS ice product or local corroboration.
+            targetState = isIceStorm ? ((nwsIceActive() || localTarget == "ICE ALARM") ? "ICE ALARM" : localTarget) : "ALARM"
             why = "<b>[🚨 OVERRIDE: NOAA OFFICIAL ALARM TRIGGERED]</b> " + why
         } else if (officialStatus == "WARNING" && targetState == "Clear") {
             targetState = isIceStorm ? "ICE WARNING" : "WARNING"
@@ -2746,22 +3099,14 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
     def timeSinceChange = now() - data.lastTrig
     def allowTransition = false
     
-    def p = getFloat(sensorPress, ["pressure"], 0.0) + getPressOffset()
-    def pTrend = getTrendData(state.pressureHistory, 0.25)
-    def isEyeOfStorm = (settings.enableEyeOfStorm != false && !state.mslpMiscalibrated && p > 0 && p < 29.60 && pTrend.rate <= 0.05)
-
-    if (isEyeOfStorm && currentState.contains("ALARM") && (targetState == "Clear" || targetState.contains("WARNING")) && (haz == "Thunderstorm" || haz == "Tornado" || haz == "Tropical")) {
-        targetState = currentState 
-        allowTransition = false
-        why += " <br><span style='color:#d9534f;'><b>[BAROMETRIC LOCK: Holding ALARM due to 'Eye of Storm'. Low Pressure center directly overhead]</b></span>"
-        mathEx += "<b>EYE OF STORM LOCK ACTIVE</b>"
-    } else {
-        if (currentState == "Clear" && targetState != "Clear") allowTransition = true
-        else if (currentState.contains("WARNING") && targetState.contains("ALARM")) allowTransition = true
-        else if (currentState == targetState) allowTransition = true 
-        else if (timeSinceChange >= debounceMs) allowTransition = true
-        else why += " <br><span style='color:#f0ad4e;'><b>[Safety Hardware Hold Active for ${Math.ceil((debounceMs - timeSinceChange)/60000).toInteger()} more mins]</b></span>"
-    }
+    // 2.0: the "Eye of the Storm" pressure lock is gone. It held Thunderstorm
+    // ALARMs whenever sea-level pressure sat under 29.60 inHg, which is an
+    // ordinary winter low in the northern US, and it had no published basis.
+    if (currentState == "Clear" && targetState != "Clear") allowTransition = true
+    else if (currentState.contains("WARNING") && targetState.contains("ALARM")) allowTransition = true
+    else if (currentState == targetState) allowTransition = true
+    else if (timeSinceChange >= debounceMs) allowTransition = true
+    else why += " <br><span style='color:#f0ad4e;'><b>[Safety Hardware Hold Active for ${Math.ceil((debounceMs - timeSinceChange)/60000).toInteger()} more mins]</b></span>"
     
     if (allowTransition && currentState != targetState) {
         logAction("${haz} DNA shifted from ${currentState} to ${targetState}.")
@@ -2778,6 +3123,7 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
             if (data.history.size() > 5) data.history = data.history[0..4]
         }
         data.currentEvent = [state: targetState, start: now()]
+        data.stateSource = source0(targetState, localTarget)
 
         def warnSw = settings["switch${haz}Warn"]
         def alarmSw = settings["switch${haz}Alarm"]
@@ -2836,12 +3182,10 @@ def processHazardState(haz, threat, prob, conf, why, mathEx, debounceMs) {
 // ==============================================================================
 def dnaTtsDefaults() {
     return [
-        Tornado: ["Warning. Elevated probability of tornado conditions.", "Critical Alert. Tornado conditions detected locally."],
         Thunderstorm: ["Warning. Elevated probability of severe thunderstorms.", "Critical Alert. Severe thunderstorm conditions actively detected."],
         Flood: ["Warning. Elevated probability of flash flood conditions.", "Critical Alert. Flash flood conditions detected locally."],
         Freeze: ["Warning. Rapid trajectory towards freeze detected.", "Alert. Freeze conditions actively occurring."],
         SevereHeat: ["Warning. High heat index detected. Caution advised.", "Critical Alert. Severe heat index conditions detected locally."],
-        Tropical: ["Warning. Tropical cyclone signatures detected.", "Critical Alert. Deep tropical cyclone conditions actively impacting location."],
         FireWeather: ["Warning. Elevated fire weather conditions.", "Critical Alert. Extreme Red Flag fire weather actively detected. No outdoor sparks."]
     ]
 }
@@ -2852,17 +3196,17 @@ def notifyEvents() {
     def tts = dnaTtsDefaults()
     def warnCd = (settings.realertCooldownMins != null ? settings.realertCooldownMins : 120) as Integer
     def evs = []
-    ["Tornado", "Thunderstorm", "Flood", "SevereHeat", "Tropical", "FireWeather"].each { id ->
+    ["Thunderstorm", "Flood", "SevereHeat", "FireWeather"].each { id ->
         def p = id.toLowerCase(); def nm = prettyHaz(id)
         evs << [key: "${p}Warn", haz: id, tier: "WARNING", fam: p, group: id, label: "${nm} WARNING",
                 hint: "Early heads-up: ingredients assembling.",
                 legacy: [push: "${p}WarnNotify", text: "push${id}Warn", tts: "${p}WarnTTS", ttsText: "tts${id}Warn", modes: "${p}WarnModes", devices: "notify${id}"],
-                defaults: [push: true, tts: true, ttsText: tts[id][0], cooldown: warnCd, holdoff: 0, maxPerDay: 0, details: true, source: "any"],
+                defaults: [push: true, tts: true, ttsText: tts[id][0], cooldown: warnCd, holdoff: 0, maxPerDay: 0, details: true, source: "local"],
                 text: "⚠ WARNING: Elevated ${nm} Conditions."]
         evs << [key: "${p}Alarm", haz: id, tier: "ALARM", fam: p, group: id, label: "${nm} ALARM",
                 hint: "Act-now alert.",
                 legacy: [push: "${p}AlarmNotify", text: "push${id}Alarm", tts: "${p}AlarmTTS", ttsText: "tts${id}Alarm", siren: "${p}AlarmSiren", sound: "${p}AlarmSound", soundUrl: "url${id}Alarm", modes: "${p}AlarmModes", devices: "notify${id}"],
-                defaults: [push: true, tts: true, ttsText: tts[id][1], siren: (id == "Tornado" || id == "Thunderstorm"), sound: false, cooldown: 0, holdoff: 0, maxPerDay: 0, details: true, escalate: true, source: "any"],
+                defaults: [push: true, tts: true, ttsText: tts[id][1], siren: (id == "Thunderstorm"), sound: false, cooldown: 0, holdoff: 0, maxPerDay: 0, details: true, escalate: true, source: "local"],
                 text: "🚨 CRITICAL: ${nm} ALARM Conditions Detected!"]
         evs << [key: "${p}Clear", haz: id, tier: "Clear", fam: p, group: id, label: "${nm} cleared",
                 hint: "'It's over' message for this hazard.",
@@ -2875,19 +3219,19 @@ def notifyEvents() {
     def fa = [push: "freezeAlarmNotify", text: "pushFreezeAlarm", tts: "freezeAlarmTTS", ttsText: "ttsFreezeAlarm", siren: "freezeAlarmSiren", sound: "freezeAlarmSound", soundUrl: "urlFreezeAlarm", modes: "freezeAlarmModes", devices: "notifyFreeze"]
     evs << [key: "freezeWarn", haz: "Freeze", tier: "WARNING", fam: "freeze", group: "Freeze", label: "Freeze WARNING (heading for 32°F)",
             hint: "Temperature trending toward freezing within hours, or an NWS Freeze Watch / Frost Advisory.",
-            legacy: fz, defaults: [push: true, tts: true, ttsText: tts.Freeze[0], cooldown: 720, holdoff: 0, maxPerDay: 1, details: true, muteExpected: true, source: "any"],
+            legacy: fz, defaults: [push: true, tts: true, ttsText: tts.Freeze[0], cooldown: 720, holdoff: 0, maxPerDay: 1, details: true, muteExpected: true, source: "local"],
             text: "⚠ WARNING: Freeze likely within hours."]
     evs << [key: "freezeAlarm", haz: "Freeze", tier: "ALARM", fam: "freeze", group: "Freeze", label: "Freeze ALARM (at/below 32°F)",
             hint: "Hard freeze happening now, or an NWS Freeze Warning.",
-            legacy: fa, defaults: [push: true, tts: true, ttsText: tts.Freeze[1], siren: false, sound: false, cooldown: 720, holdoff: 0, maxPerDay: 1, details: true, muteExpected: true, escalate: false, source: "any"],
+            legacy: fa, defaults: [push: true, tts: true, ttsText: tts.Freeze[1], siren: false, sound: false, cooldown: 720, holdoff: 0, maxPerDay: 1, details: true, muteExpected: true, escalate: false, source: "local"],
             text: "🚨 Freeze ALARM: at or below 32°F."]
     evs << [key: "iceWarn", haz: "Freeze", tier: "WARNING", fam: "ice", group: "Freeze", label: "ICE WARNING (possible freezing rain)",
             hint: "Precipitation into sub-freezing air that no forecast/official product confirms (could be wet snow), or an NWS ice advisory. Never muted by the expected-freeze logic.",
-            legacy: fz, defaults: [push: true, tts: false, ttsText: "Warning. Possible freezing rain.", cooldown: 360, holdoff: 0, maxPerDay: 0, details: true, source: "any"],
+            legacy: fz, defaults: [push: true, tts: false, ttsText: "Warning. Possible freezing rain.", cooldown: 360, holdoff: 0, maxPerDay: 0, details: true, source: "local"],
             text: "⚠ WARNING: Possible freezing rain / ice."]
     evs << [key: "iceAlarm", haz: "Freeze", tier: "ALARM", fam: "ice", group: "Freeze", label: "ICE STORM ALARM (freezing rain)",
             hint: "Freezing rain confirmed by TAF, NWS forecast or an NWS ice product. Never muted by the expected-freeze logic.",
-            legacy: fa, defaults: [push: true, tts: true, ttsText: "Critical alert. Freezing rain. Ice accumulating.", siren: false, sound: false, cooldown: 360, holdoff: 0, maxPerDay: 0, details: true, escalate: true, source: "any"],
+            legacy: fa, defaults: [push: true, tts: true, ttsText: "Critical alert. Freezing rain. Ice accumulating.", siren: false, sound: false, cooldown: 360, holdoff: 0, maxPerDay: 0, details: true, escalate: true, source: "local"],
             text: "🚨 CRITICAL: ICE STORM ALARM Conditions Detected!"]
     evs << [key: "freezeClear", haz: "Freeze", tier: "Clear", fam: "freeze", group: "Freeze", label: "Freeze / ice cleared",
             hint: "Back above freezing / ice ended.",
@@ -2899,6 +3243,36 @@ def notifyEvents() {
             legacy: [push: "globalAllClearNotify", tts: "globalAllClearTTS", ttsText: "ttsGlobalAllClear", sound: "globalAllClearSound", soundUrl: "urlGlobalAllClear"],
             defaults: [push: true, tts: true, ttsText: "The severe weather event has concluded. All clear.", sound: false, cooldown: 0, maxPerDay: 0, details: false, onlyIfAlerted: true],
             text: "✅ Weather All-Clear: All severe weather threats have passed."]
+    // Sensor health (2.0)
+    evs << [key: "sensorStale", haz: null, tier: "Info", fam: "sensor", group: "System", label: "Sensor offline",
+            hint: "A sensor stopped reporting or reads an impossible value for 10+ minutes past the stale timeout. Hazards that need it pause.",
+            legacy: [:], defaults: [push: true, tts: false, cooldown: 0, holdoff: 0, maxPerDay: 4, details: false], text: "⚠ Weather sensor problem."]
+    evs << [key: "sensorBack", haz: null, tier: "Info", fam: "sensor", group: "System", label: "Sensor back online",
+            hint: "A sensor you were told about is reporting again.",
+            legacy: [:], defaults: [push: false, tts: false, cooldown: 0, holdoff: 0, maxPerDay: 3, details: false], text: "✅ Weather sensor reporting again."]
+    // Official NWS products (2.0): their own rows, separate from your station.
+    def warnOn = [tornado: [push: true, tts: true, siren: true], storm: [push: true, tts: true], wind: [push: true], flood: [push: true, tts: true],
+                  freeze: [push: true], ice: [push: true, tts: true], winter: [push: true], cold: [push: true], heat: [push: true], fire: [push: true],
+                  tropical: [push: true, tts: true], air: [push: true], civil: [push: true, tts: true], other: [:]]
+    def watchOn = [tornado: [push: true], storm: [push: true], flood: [push: true], ice: [push: true], tropical: [push: true]]
+    nwsGroups().each { g ->
+        def wo = warnOn[g.id] ?: [:]; def wa = watchOn[g.id] ?: [:]
+        def prods = nwsProducts().findAll { k, v -> v.grp == g.id }
+        def warnNames = prods.findAll { k, v -> v.tier == "ALARM" }.keySet().join(", ")
+        def watchNames = prods.findAll { k, v -> v.tier == "WARNING" }.keySet().join(", ")
+        def extra = (g.id == "winter") ? " Winter products that call for freezing rain or ice accumulation also count as Ice Storm." : ""
+        def xDef = (g.id == "freeze") ? [muteExpected: false] : [:]
+        evs << [key: "nws_${g.id}_warn", haz: null, nws: true, tier: "ALARM", fam: "nws_${g.id}", group: "NWS", label: "NWS ${g.icon} ${g.name}: warnings",
+                hint: "${warnNames ?: 'Any other NWS warning'}.${extra}", legacy: [:],
+                defaults: [push: wo.push == true, tts: wo.tts == true, siren: wo.siren == true, sound: false, ttsText: "Official National Weather Service ${g.name} warning for your location.",
+                           cooldown: 0, holdoff: 0, maxPerDay: 0, updates: false] + xDef,
+                text: "🚨 NWS:"]
+        evs << [key: "nws_${g.id}_watch", haz: null, nws: true, tier: "WARNING", fam: "nws_${g.id}", group: "NWS", label: "NWS ${g.icon} ${g.name}: watches & advisories",
+                hint: "${watchNames ?: 'Any other NWS watch, advisory or statement'}.${extra}", legacy: [:],
+                defaults: [push: wa.push == true, tts: false, ttsText: "National Weather Service ${g.name} watch or advisory for your location.",
+                           cooldown: 0, holdoff: 0, maxPerDay: 0, updates: false] + xDef,
+                text: "⚠ NWS:"]
+    }
     return evs
 }
 
@@ -2926,7 +3300,7 @@ def nBool(ev, field) { return nSet(ev, field) == true || nSet(ev, field) == "tru
 
 def notifyLog(String line) {
     def h = state.notifyLog ?: []
-    h.add(0, "[${new Date().format('MM/dd hh:mm a', location.timeZone)}] ${line}")
+    h.add(0, "[${new Date(now()).format('MM/dd hh:mm a', location.timeZone)}] ${line}")
     if (h.size() > 40) h = h[0..39]
     state.notifyLog = h
 }
@@ -2962,7 +3336,7 @@ def dispatchNotification(String key, Map ctx) {
     def minProb = nInt(ev, "minProb")
     if (minProb > 0 && ctx.source != "NWS" && ctx.prob != null && ctx.prob < minProb) { skip("probability ${ctx.prob}% < minimum ${minProb}%"); return }
     
-    if (ev.defaults.containsKey("muteExpected") && !ctx.wasIce && nBool(ev, "muteExpected") && state.freezeExpected == true && settings.seasonalFreezeAuto != false) {
+    if (ev.defaults.containsKey("muteExpected") && !ctx.wasIce && !(ctx.nws?.ice) && nBool(ev, "muteExpected") && state.freezeExpected == true && settings.seasonalFreezeAuto != false) {
         skip("freeze expected (${state.freezeExpectedReason ?: 'learned'})"); return
     }
     
@@ -2978,7 +3352,7 @@ def dispatchNotification(String key, Map ctx) {
     def qs = nSet(ev, "quietStart"); def qe = nSet(ev, "quietEnd")
     if (qs && qe) {
         try {
-            if (timeOfDayIsBetween(toDateTime(qs), toDateTime(qe), new Date(), location.timeZone)) { skip("quiet hours"); return }
+            if (timeOfDayIsBetween(toDateTime(qs), toDateTime(qe), new Date(now()), location.timeZone)) { skip("quiet hours"); return }
         } catch (e) {}
     }
     
@@ -3004,7 +3378,7 @@ def dispatchNotification(String key, Map ctx) {
     if (cap > 0 && sentToday >= cap) { skip("daily cap ${cap} reached"); return }
     
     def hold = nInt(ev, "holdoff")
-    if (hold > 0 && !ctx.fromPending && ev.tier != "AllClear") {
+    if (hold > 0 && !ctx.fromPending && ev.haz && ev.tier != "AllClear") {
         def pend = state.pendingNotify ?: [:]
         pend[ev.key] = [key: ev.key, haz: ctx.haz, to: ctx.to, due: now() + hold * 60000L, prob: ctx.prob, conf: ctx.conf, source: ctx.source, from: ctx.from, wasIce: ctx.wasIce]
         state.pendingNotify = pend
@@ -3014,14 +3388,17 @@ def dispatchNotification(String key, Map ctx) {
     
     // ---- deliver ----
     def msg = nSet(ev, "text") ?: ev.text
-    if (nBool(ev, "details")) {
+    if (ctx.detail) msg += " " + ctx.detail
+    if (nBool(ev, "details") && ctx.haz) {
         def bits = []
-        if (ctx.prob != null && ev.tier in ["WARNING", "ALARM"]) bits << "prob ${ctx.prob}%"
-        if (ctx.haz == "Freeze") {
-            def tNow = getFloat(sensorTemp, ["temperature", "tempf"], null)
-            if (tNow != null) bits << "${String.format('%.1f', tNow as Double)}°F"
-        }
+        if (ctx.prob != null && ev.tier in ["WARNING", "ALARM"]) bits << "score ${ctx.prob}%"
+        def tNow = getFloat(sensorTemp, tempAttrs(), null)
+        if (tNow != null && isMetric()) tNow = (tNow as Double) * 9.0 / 5.0 + 32.0
+        if (ctx.haz == "Freeze" && tNow != null) bits << "${String.format('%.1f', tNow as Double)}°F"
         if (ctx.source) bits << (ctx.source == "NWS" ? "NWS" : "local sensors")
+        // Corroboration (2.0): a local detection says whether NWS agrees.
+        def nwsSame = nwsActiveAlerts().findAll { it.haz == ctx.haz }.collect { it.event }.unique()
+        if (ctx.source != "NWS" && nwsSame) bits << "NWS agrees: ${nwsSame.join(', ')}"
         if (bits) msg += " (" + bits.join(", ") + ")"
     }
     if ("push" in outs) {
@@ -3039,8 +3416,9 @@ def dispatchNotification(String key, Map ctx) {
     state.notifyDay = day
     if (ctx.data != null && ev.tier in ["WARNING", "ALARM"]) ctx.data.episodeAlerted = true
     if (ev.fam == "freeze" && ev.tier in ["WARNING", "ALARM"]) state.lastRoutineFreezeAlertTs = now()
-    if (ev.fam != "freeze" && ev.tier in ["WARNING", "ALARM"]) state.globalEventAlerted = true
+    if (ctx.haz && ev.fam != "freeze" && ev.tier in ["WARNING", "ALARM"]) state.globalEventAlerted = true
     notifyLog("SENT ${ev.label} via ${outs.join('+')}: ${msg}")
+    return true
 }
 
 // Held notifications go out only if the hazard is still in the same state.
@@ -3076,13 +3454,15 @@ def notificationPage() {
             def h = state.notifyLog ?: []
             paragraph h ? "<div style='font-family:monospace; font-size:11px; line-height:1.5;'>" + h.collect { escapeHtml(it) }.join("<br>") + "</div>" : "<i>Nothing yet.</i>"
         }
-        def groups = [["Tornado", "🌪️"], ["Thunderstorm", "⛈️"], ["Flood", "🌊"], ["Freeze", "❄️"], ["SevereHeat", "🔥"], ["Tropical", "🌀"], ["FireWeather", "🔥🌲"], ["Global", "✅"]]
+        def groups = [["Thunderstorm", "⛈️"], ["Flood", "🌊"], ["Freeze", "❄️"], ["SevereHeat", "🔥"], ["FireWeather", "🔥🌲"], ["Global", "✅"], ["System", "🔧"], ["NWS", "🏛️"]]
         def evs = notifyEvents()
         groups.each { g ->
             def gid = g[0]
             def gEvs = evs.findAll { it.group == gid }
             def onCount = gEvs.count { e -> nBool(e, "push") || nBool(e, "tts") }
-            section("<b>${g[1]} ${gid == 'Global' ? 'Global' : prettyHaz(gid)}</b> <span style='font-size:11px; color:#777;'>(${onCount} of ${gEvs.size()} on)</span>", hideable: true, hidden: true) {
+            def gName = gid == 'Global' ? 'Global' : (gid == 'System' ? 'Sensor health' : (gid == 'NWS' ? 'Official NWS products (separate from your station)' : "Your station: " + prettyHaz(gid)))
+            section("<b>${g[1]} ${gName}</b> <span style='font-size:11px; color:#777;'>(${onCount} of ${gEvs.size()} on)</span>", hideable: true, hidden: true) {
+                if (gid == "NWS") paragraph "<i>One message per new NWS product for your hub's location, with its end time. Updates and extensions of a product you already got are logged, not sent, unless you switch that on. ${settings.enableNOAA ? '' : '<b>NWS alerts (Feed 1) are off in Configuration, so none of these will fire.</b>'}</i>"
                 gEvs.each { ev -> notificationRow(ev) }
             }
         }
@@ -3092,6 +3472,7 @@ def notificationPage() {
 def notificationRow(ev) {
     def k = "n_${ev.key}_"
     def hasNws = (ev.haz != null && ev.tier in ["WARNING", "ALARM"])
+    def isNws = (ev.nws == true)
     paragraph "<div style='margin-top:8px; padding:6px 8px; background:#f2f4f7; border-left:4px solid ${ev.tier == 'ALARM' ? '#d9534f' : (ev.tier == 'WARNING' ? '#f0ad4e' : '#5cb85c')}; font-size:13px;'><b>${ev.label}</b><br><span style='font-size:11px; color:#555;'>${ev.hint}</span></div>"
     input "${k}push", "bool", title: "Push notification", defaultValue: nBool(ev, "push"), submitOnChange: true
     input "${k}tts", "bool", title: "Spoken announcement (TTS)", defaultValue: nBool(ev, "tts"), submitOnChange: true
@@ -3101,16 +3482,17 @@ def notificationRow(ev) {
     if (!anyOn) return
     if (nBool(ev, "push")) {
         input "${k}text", "text", title: "Push text (blank = default)", required: false, description: "<i>Default: ${ev.text}</i>"
-        input "${k}details", "bool", title: "Add details to the push (probability, temperature, local vs NWS)", defaultValue: nBool(ev, "details")
+        if (ev.haz) input "${k}details", "bool", title: "Add details to the push (score, temperature, local vs NWS, whether NWS agrees)", defaultValue: nBool(ev, "details")
         input "${k}devices", "capability.notification", title: "Send to these devices instead of the usual ones (optional)", multiple: true, required: false
     }
     if (nBool(ev, "tts")) input "${k}ttsText", "text", title: "Spoken text", required: false, defaultValue: nSet(ev, "ttsText")
     if (ev.tier in ["ALARM", "AllClear"] && nBool(ev, "sound")) input "${k}soundUrl", "text", title: "Sound file URL or chime #", required: false, defaultValue: nSet(ev, "soundUrl")
     input "${k}cooldown", "number", title: "Re-alert cooldown (minutes, 0 = none)", defaultValue: nInt(ev, "cooldown"), range: "0..10080", description: "<i>Repeats of this notification inside this window are logged, not sent.${ev.tier == 'WARNING' ? ' Also counts from the last ALARM of the same hazard, so an ALARM stepping down to WARNING is quiet.' : ''}</i>"
     if (ev.tier == "ALARM") input "${k}escalate", "bool", title: "Escalation from a WARNING you were told about skips the cooldown", defaultValue: nBool(ev, "escalate")
-    if (ev.tier != "AllClear") input "${k}holdoff", "number", title: "Hold-off (minutes, 0 = send immediately)", defaultValue: nInt(ev, "holdoff"), range: "0..240", description: "<i>Wait this long and send only if the hazard is still in this state. Filters short blips.</i>"
+    if (ev.haz) input "${k}holdoff", "number", title: "Hold-off (minutes, 0 = send immediately)", defaultValue: nInt(ev, "holdoff"), range: "0..240", description: "<i>Wait this long and send only if the hazard is still in this state. Filters short blips.</i>"
     input "${k}maxPerDay", "number", title: "Max per day (0 = unlimited)", defaultValue: nInt(ev, "maxPerDay"), range: "0..100"
-    if (ev.tier in ["WARNING", "ALARM"]) input "${k}minProb", "number", title: "Only if probability at least (%, blank = any)", required: false, range: "0..100", description: "<i>Applies to local detections. NWS-triggered states always pass.</i>"
+    if (isNws) input "${k}updates", "bool", title: "Also send updates / extensions of a product already sent", defaultValue: nBool(ev, "updates")
+    if (ev.tier in ["WARNING", "ALARM"] && !isNws) input "${k}minProb", "number", title: "Only if probability at least (%, blank = any)", required: false, range: "0..100", description: "<i>Applies to local detections. NWS-triggered states always pass.</i>"
     if (hasNws) input "${k}source", "enum", title: "Trigger source", options: ["any": "Local sensors or NWS", "local": "Local sensors only", "nws": "NWS only"], defaultValue: nSet(ev, "source") ?: "any"
     if (ev.defaults.containsKey("muteExpected")) input "${k}muteExpected", "bool", title: "Mute while a freeze is expected (local log / NWS forecast)", defaultValue: nBool(ev, "muteExpected")
     if (ev.defaults.containsKey("onlyIfAlerted")) input "${k}onlyIfAlerted", "bool", title: "Only if something was announced first", defaultValue: nBool(ev, "onlyIfAlerted"), description: "<i>No 'all clear' for an event nobody was told about.</i>"
@@ -3240,7 +3622,7 @@ def updateChildDevice() {
     def child = getChildDevice("SevWeather-${app.id}")
     if (child) {
         def matrix = state.threatMatrix
-        def hazards = ["Tornado", "Thunderstorm", "Flood", "Freeze", "SevereHeat", "Tropical", "FireWeather"]
+        def hazards = hazardIds()
         
         def highestState = "Clear"
         hazards.each { haz ->
@@ -3267,7 +3649,7 @@ def updateChildDevice() {
 def logAction(msg) { 
     if(txtEnable) log.info "${app.label}: ${msg}"
     def h = state.actionHistory ?: []
-    h.add(0, "[${new Date().format("MM/dd hh:mm a", location.timeZone)}] ${msg}")
+    h.add(0, "[${new Date(now()).format("MM/dd hh:mm a", location.timeZone)}] ${msg}")
     if(h.size() > 30) h = h[0..29]
     state.actionHistory = h 
 }
