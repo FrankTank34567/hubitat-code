@@ -1,0 +1,19 @@
+{
+  "packageName": "Advanced Severe Weather Detector",
+  "author": "FrankTank34567",
+  "version": "1.0.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-21",
+  "documentationLink": "https://github.com/FrankTank34567/hubitat-code",
+  "apps": [
+    {
+      "id": "6226d7b2-13a7-5abd-9c3f-2f81c919f6a1",
+      "name": "Advanced Severe Weather Detector",
+      "namespace": "franktank",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/apps/Advanced%20Severe%20Weather%20Detector.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": true
+    }
+  ]
+}

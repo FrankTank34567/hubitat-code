@@ -2,6 +2,7 @@
 
 | File | Type | Namespace | Header version | Hub code id | Date pulled |
 |---|---|---|---|---|---|
+| apps/Advanced Severe Weather Detector.groovy | app | franktank | 1.0.0 | 1021 | 2026-11-21 (forked from ShaneAllen v13 on hub; not yet installed) |
 | apps/Curtain Scheduler Room.groovy | app | franktank | 0.6.1 | 1032 | 2026-11-09 |
 | apps/Curtain Scheduler.groovy | app | franktank | 0.2.1 | 1031 | 2026-11-09 |
 | apps/Frame Bridge.groovy | app | epaperframe |  | 1041 | 2026-11-09 |

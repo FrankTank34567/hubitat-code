@@ -21,6 +21,19 @@
       ]
     },
     {
+      "key": "severe-weather",
+      "name": "Advanced Severe Weather Detector",
+      "category": "Safety & Security",
+      "description": "Local predictive severe-weather engine (tornado, storm, flood, freeze/ice, heat, tropical, fire) with NWS alerts; fork with forecast-aware freeze alert muting.",
+      "version": "1.0.0",
+      "apps": [
+        {
+          "file": "apps/Advanced Severe Weather Detector.groovy",
+          "primary": true
+        }
+      ]
+    },
+    {
       "key": "frame-bridge",
       "name": "Frame Bridge",
       "category": "Integrations",

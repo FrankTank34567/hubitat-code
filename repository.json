@@ -10,6 +10,13 @@
       "description": "Schedules curtains/blinds per room on sunrise/sunset or fixed times, with presence/event triggers and a keep-closed mode."
     },
     {
+      "id": "f3843e20-c0c0-510f-9ec1-792e449edceb",
+      "name": "Advanced Severe Weather Detector",
+      "category": "Safety & Security",
+      "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/hpm/severe-weather/packageManifest.json",
+      "description": "Local predictive severe-weather engine (tornado, storm, flood, freeze/ice, heat, tropical, fire) with NWS alerts; fork with forecast-aware freeze alert muting."
+    },
+    {
       "id": "6fcd6d6d-3cc3-591b-8bc8-8609e708c7af",
       "name": "Frame Bridge",
       "category": "Integrations",
