@@ -114,8 +114,8 @@
  *                  discoverRobot (REST: what this robot supports)
  *
  * Author:  Hubitat Community contribution
- * Version: 3.15.0
- * Date:    2026-11-21
+ * Version: 3.16.0
+ * Date:    2026-11-22
  *
  * Copyright 2025 Contributors. Licensed under the Apache License, Version 2.0.
  * You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -125,6 +125,16 @@
  * UNENCRYPTED MQTT and (optionally) UNAUTHENTICATED HTTP on your local network,
  * which mirrors how Valetudo itself operates. Do NOT expose your MQTT broker or
  * robot's REST API to the public internet.
+ *
+ * v3.16.0 — NO MQTT COMMANDS WHILE THE ROBOT IS OFFLINE ON MQTT
+ *
+ *   Commands are published at QoS 1 and Valetudo uses a persistent MQTT session, so while a
+ *   robot is offline the broker queues them and delivers them later. During the Walter
+ *   incident (2026-11-21) one START from a nightly rule was delivered five times at once at
+ *   02:19, and volume commands repeatedly, while the robot showed "lost". Now mqttUp() is
+ *   also false while robotAvailability is "offline", so commands take the existing REST path
+ *   (honouring restFallback and the circuit breaker): they reach the robot directly or fail
+ *   visibly, instead of waiting at the broker to run at an unexpected time.
  *
  * v3.15.0 — ROBOT OFFLINE: ONE WARNING INSTEAD OF ONE PER RECONNECT ATTEMPT
  *
@@ -559,7 +569,7 @@ import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
 import groovy.transform.Field
 
-@Field static final String DRIVER_VERSION = "3.15.0"
+@Field static final String DRIVER_VERSION = "3.16.0"
 
 // REST circuit breaker tuning. See restPut() / restFailed() / restSucceeded().
 @Field static final int REST_FAIL_THRESHOLD      = 3     // consecutive failures before the breaker opens
@@ -2258,7 +2268,15 @@ def resetConsumable(String name) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 private boolean mqttUp() {
-    return device.currentValue("mqttStatus") == "connected"
+    if (device.currentValue("mqttStatus") != "connected") return false
+    // v3.16.0: a robot that is offline on MQTT would get the command queued at the broker
+    // (QoS 1, persistent session) and run it later; use REST instead. state, not
+    // currentValue, because currentValue lags within the same execution.
+    if (state.lastRobotAvailability == "offline") {
+        logDebug "Robot offline on MQTT; sending the command over REST"
+        return false
+    }
+    return true
 }
 
 private void pub(String subTopic, String payload) {
