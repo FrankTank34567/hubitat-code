@@ -114,8 +114,8 @@
  *                  discoverRobot (REST: what this robot supports)
  *
  * Author:  Hubitat Community contribution
- * Version: 3.14.0
- * Date:    2026-11-18
+ * Version: 3.15.0
+ * Date:    2026-11-21
  *
  * Copyright 2025 Contributors. Licensed under the Apache License, Version 2.0.
  * You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
@@ -125,6 +125,20 @@
  * UNENCRYPTED MQTT and (optionally) UNAUTHENTICATED HTTP on your local network,
  * which mirrors how Valetudo itself operates. Do NOT expose your MQTT broker or
  * robot's REST API to the public internet.
+ *
+ * v3.15.0 — ROBOT OFFLINE: ONE WARNING INSTEAD OF ONE PER RECONNECT ATTEMPT
+ *
+ *   A robot stuck in an MQTT reconnect loop (seen 2026-11-21: Walter/X40 Master, broker
+ *   closing every attempt with EPIPE for ~19 h) makes the broker re-publish its retained
+ *   Last Will "lost" on every attempt, and the driver logged a warning for each one
+ *   (every 3-5 s, ~700 lines an hour). Now:
+ *     - robotAvailability still turns "offline" at once (rules can use "for N minutes").
+ *     - The first warning comes after ROBOT_OFFLINE_WARN_SEC (2 min), so reboots and
+ *       Wi-Fi blips stay quiet; it says since when and how many "lost" reports arrived.
+ *     - A reminder follows every ROBOT_OFFLINE_REMIND_SEC (30 min) while it lasts.
+ *     - "ready" brings it back online with one info line (only if a warning was shown).
+ *     - "init" (published at the start of every connection attempt) no longer counts as
+ *       online, so a reconnect loop cannot flip robotAvailability back and forth.
  *
  * v3.14.0 — DERIVED CHARGING / DISCHARGING FOR ROBOTS THAT ONLY REPORT "none"
  *
@@ -545,7 +559,7 @@ import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
 import groovy.transform.Field
 
-@Field static final String DRIVER_VERSION = "3.14.0"
+@Field static final String DRIVER_VERSION = "3.15.0"
 
 // REST circuit breaker tuning. See restPut() / restFailed() / restSucceeded().
 @Field static final int REST_FAIL_THRESHOLD      = 3     // consecutive failures before the breaker opens
@@ -724,6 +738,11 @@ private boolean isNonAlertText(String s) {
 // v3.14.0: how long a battery level change counts as a trend (charging/discharging).
 // Measured on a MOVA V50: +1 %/min while charging; slower near the top, so 5 min.
 @Field static final int CHARGE_TREND_WINDOW_SEC = 300
+
+// v3.15.0: robot offline (Homie $state lost) logging: first warning after this long,
+// then a reminder at this interval while it lasts.
+@Field static final int ROBOT_OFFLINE_WARN_SEC   = 120
+@Field static final int ROBOT_OFFLINE_REMIND_SEC = 1800
 
 // Topic filters used when the targetedSubscriptions preference is ON. Exactly the
 // topics parse() handles (plus their siblings via "+"), and nothing else — so the
@@ -1066,6 +1085,10 @@ def initialize() {
     // so a version written only there goes stale and misreports what is running.
     // initialize() is also called by the Initialize capability on hub restart.
     sendEvent(name: "driverVersion", value: DRIVER_VERSION, isStateChange: true)
+
+    // v3.15.0: initialize() clears schedules, so an open robot-offline timer would never
+    // fire. Start over; the retained $state is re-delivered on subscribe and restarts it.
+    ["robotOfflineSince","robotOfflineCount","robotOfflineState","robotOfflineWarned"].each { state.remove(it) }
 
     // Repair pass. flushAlerts() compares against state.last*, so if an attribute is
     // stuck on a stale value while its state var is already correct, the guard would
@@ -1470,12 +1493,61 @@ def parse(String description) {
 // driver link and (worse) made mqttUp() route commands to REST while MQTT was fine.
 // The robot's availability now gets its own attribute.
 private void handleHomieState(String payload) {
-    if (payload in ["ready","init"]) {
+    if (payload == "ready") {
+        robotBackOnline()
         setRobotAvailability("online")
+    } else if (payload == "init") {
+        // Published at the start of every connection attempt; only "ready" means online.
+        logDebug "Robot Homie \$state → init"
     } else if (payload in ["lost","disconnected","sleeping"]) {
         setRobotAvailability("offline")
-        log.warn "${device.displayName}: Robot reports Homie \$state → ${payload} (robot offline; Hubitat broker link unaffected)"
+        noteRobotOffline(payload)
     }
+}
+
+// v3.15.0: count "lost" reports; the first warning comes from robotOfflineCheck().
+private void noteRobotOffline(String payload) {
+    state.robotOfflineCount = ((state.robotOfflineCount ?: 0) as Integer) + 1
+    if (state.robotOfflineSince == null) {
+        state.robotOfflineSince = now()
+        state.robotOfflineState = payload
+        state.remove("robotOfflineWarned")
+        runIn(ROBOT_OFFLINE_WARN_SEC, "robotOfflineCheck")
+    }
+    logDebug "Robot Homie \$state → ${payload} (report ${state.robotOfflineCount})"
+}
+
+// Public only because runIn() needs a callable method.
+def robotOfflineCheck() {
+    if (state.robotOfflineSince == null) return
+    Long since = state.robotOfflineSince as Long
+    Integer n = (state.robotOfflineCount ?: 0) as Integer
+    String when = new Date(since).format("HH:mm", location?.timeZone ?: TimeZone.getDefault())
+    String verb = state.robotOfflineWarned ? "still offline" : "offline"
+    log.warn "${device.displayName}: Robot ${verb} on MQTT since ${when} (${formatDuration(now() - since)}, " +
+             "${n} \"${state.robotOfflineState}\" report${n == 1 ? '' : 's'}; Hubitat broker link unaffected)"
+    state.robotOfflineWarned = true
+    runIn(ROBOT_OFFLINE_REMIND_SEC, "robotOfflineCheck")
+}
+
+private void robotBackOnline() {
+    if (state.robotOfflineSince == null) return
+    Long since = state.robotOfflineSince as Long
+    if (state.robotOfflineWarned) {
+        log.info "${device.displayName}: Robot back online on MQTT after ${formatDuration(now() - since)}"
+    } else {
+        logDebug "Robot back online on MQTT after ${formatDuration(now() - since)} (no warning was needed)"
+    }
+    ["robotOfflineSince","robotOfflineCount","robotOfflineState","robotOfflineWarned"].each { state.remove(it) }
+    unschedule("robotOfflineCheck")
+}
+
+private static String formatDuration(long ms) {
+    long m = Math.max(0L, ms) / 60000L
+    if (m < 1) return "under a minute"
+    if (m < 60) return "${m} min"
+    long h = m / 60L
+    return (m % 60L) ? "${h} h ${m % 60L} min" : "${h} h"
 }
 
 // Change-guarded like setMqttStatus, for the same reason: retained $state is

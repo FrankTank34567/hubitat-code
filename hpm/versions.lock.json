@@ -57,10 +57,10 @@
     }
   },
   "valetudo": {
-    "version": "3.14.0",
-    "dateReleased": "2026-11-18",
+    "version": "3.15.0",
+    "dateReleased": "2026-11-21",
     "hashes": {
-      "drivers/Valetudo Robot Vacuum.groovy": "065b9343bb7db9b079e19d895a0aed2cade3c5353404f9abf9760bd250d8319a"
+      "drivers/Valetudo Robot Vacuum.groovy": "4df322a4f0953d52c7335bda16b0ba43f00d44d282dd86a24fe33260b9e5f7f4"
     }
   },
   "starling": {
