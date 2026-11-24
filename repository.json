@@ -14,7 +14,7 @@
       "name": "Advanced Severe Weather Detector",
       "category": "Safety & Security",
       "location": "https://raw.githubusercontent.com/FrankTank34567/hubitat-code/main/hpm/severe-weather/packageManifest.json",
-      "description": "Local predictive severe-weather engine (tornado, storm, flood, freeze/ice, heat, tropical, fire) with NWS alerts; fork with forecast-aware freeze alert muting."
+      "description": "Local-first severe-weather monitor (storm, flood, freeze/ice, heat, fire) from your own station, with NWS products as corroboration and as their own optional notifications."
     },
     {
       "id": "6fcd6d6d-3cc3-591b-8bc8-8609e708c7af",
